@@ -1,0 +1,29 @@
+# @package _global_
+defaults:
+  - _self_
+
+data_dir: null
+eval_data_dir: null
+train_dir: "train"
+overwrite_metadata_dir: null
+overwrite_inference_data_dir: null
+dataset_name: null
+dataset_category: "instruction"
+dataset_split: "train"
+task_name: null
+concept_path: null
+max_concepts: 500
+num_of_examples: 144
+filter_length: 512
+master_data_dir: "axbench/data"
+shuffle: true
+dev_size: 0.1
+select_column: "prompt"
+response_column: "completion"
+cache_dir: null
+seed: 42
+dump_dir: null
+select_concept_ids: []
+held_out_eval: false
+input_condition_concept: false
+max_seq_length: null

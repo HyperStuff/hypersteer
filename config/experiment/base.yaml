@@ -1,0 +1,59 @@
+# @package _global_
+defaults:
+  - _self_
+
+# Base experiment - uses all the individual base configs
+# This should be minimal and only override specific values needed for this experiment
+
+# Training overrides
+train:
+  batch_size: 4
+  test_batch_size: 4
+  save_dir: assets/checkpoints
+  run_eval_suite_at_end: true
+
+# Model overrides  
+model:
+  include_sentence_in_embedding: true
+
+# Inference overrides
+inference:
+  latent_batch_size: 24
+  steering_batch_size: 12
+  steering_factors: [0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.4, 1.6, 1.8, 2.0, 2.5, 3.0, 4.0, 5.0]
+  temperature: 1.0
+  batch_infer_hypernetwork: false
+  ignore_latent_state: true
+  ignore_steering_state: true
+  run_distinct_infers: true
+  
+  factor_selection:
+    n_calls: 15
+    factor_max: 2.0
+    model: "HyperSteer"
+    discrete_space: true
+    discrete_steps: 30
+    capture_all_metrics: true
+
+# Evaluation overrides
+evaluate:
+  report_to: "wandb"
+  run_distinct_evals: true
+
+# Dataset overrides
+dataset:
+  data_dir: data/axbench/concept10/prod_2b_l20_v1
+  eval_data_dir: data/axbench/concept10-heldout-prod
+  max_concepts: 100
+  num_of_examples: -1
+  cache_dir: assets/cache
+
+# Wandb overrides
+wandb:
+  project: ${oc.env:WANDB_PROJECT,axbench-hypersteer}
+  entity: ${oc.env:WANDB_ENTITY,null}
+  run_name: ${oc.env:WANDB_RUN_NAME,null}
+  run_id: ${oc.env:WANDB_RUN_ID,null}
+  group: ${oc.env:WANDB_GROUP,null}
+  tags: ${oc.env:WANDB_TAGS,null}
+  notes: ${oc.env:WANDB_NOTES,null}
