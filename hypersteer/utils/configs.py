@@ -20,6 +20,43 @@ def config_to_pydantic(cfg: DictConfig, model_class: type[T]) -> T:
     return model_class(**config_dict)
 
 
+def load_experiment_config(experiment_name: str, config_path: str = "config") -> DictConfig:
+    """
+    Load and merge experiment configuration manually.
+    
+    Args:
+        experiment_name: Name of the experiment (e.g., 'base', 'hypersteer')
+        config_path: Path to the config directory
+        
+    Returns:
+        Merged DictConfig with base defaults + experiment overrides
+    """
+    config_path = Path(config_path)
+    
+    # Load base defaults
+    base_defaults_path = config_path / "base_defaults.yaml"
+    if not base_defaults_path.exists():
+        raise FileNotFoundError(f"Base defaults config not found at {base_defaults_path}")
+    
+    base_config = OmegaConf.load(base_defaults_path)
+    logger.info(f"Loaded base defaults from {base_defaults_path}")
+    
+    # Load experiment overrides
+    experiment_path = config_path / "experiment" / f"{experiment_name}.yaml"
+    if not experiment_path.exists():
+        logger.warning(f"Experiment config not found at {experiment_path}, using base defaults only")
+        return base_config
+    
+    experiment_config = OmegaConf.load(experiment_path)
+    logger.info(f"Loaded experiment overrides from {experiment_path}")
+    
+    # Merge configs (experiment overrides base)
+    merged_config = OmegaConf.merge(base_config, experiment_config)
+    logger.info(f"Successfully merged experiment '{experiment_name}' with base defaults")
+    
+    return merged_config
+
+
 class BaseConfigModel(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 
@@ -67,6 +104,23 @@ class DatasetConfig(BaseConfigModel):
     input_condition_concept: bool = False
     max_seq_length: int | None = None
 
+    # HuggingFace dataset configuration
+    hf_dataset_name: str | None = None
+    hf_data_files: dict[str, str] | str | None = None
+    hf_split: str = "train"
+    hf_cache_dir: str | Path | None = None
+    hf_revision: str | None = None
+    hf_use_auth_token: bool | str | None = None
+    hf_streaming: bool = False
+    hf_num_proc: int | None = None
+    hf_keep_in_memory: bool = False
+    hf_download_config: dict | None = None
+    hf_download_mode: str | None = None
+    hf_verification_mode: str | None = None
+    hf_ignore_verifications: bool = False
+    hf_save_infos: bool = False
+    hf_trust_remote_code: bool = False
+
 
 class FactorSelectionConfig(BaseConfigModel):
     """Configuration for selecting optimal steering factors using Optuna."""
@@ -77,6 +131,7 @@ class FactorSelectionConfig(BaseConfigModel):
     factor_max: float = 3.0
     metric: str = "lm_judge_rating"  # Which metric to optimize
     model: str = "HyperSteer"
+    models: list[str] = Field(default_factory=list)  # Multiple models for factor selection
     # New parameters for Optuna
     discrete_space: bool = False  # Whether to use discrete values
     discrete_steps: int = 10  # Number of steps for discrete space
@@ -195,6 +250,7 @@ class InferenceConfig(BaseConfigModel):
     use_bf16: bool = True
     mode: str = "all"
     model_name: str = "google/gemma-2-2b-it"
+    models: list[str] = Field(default_factory=list)  # Multiple models to run inference on
     # DEPRECATED: batch_infer_hypernetwork is no longer used - batch inference is always enabled
     batch_infer_hypernetwork: bool = True
 
@@ -243,6 +299,7 @@ class EvalArgs(BaseConfigModel):
     """Evaluation arguments derived from eval_args.py"""
 
     mode: str = "all"
+    models: list[str] = Field(default_factory=list)  # Multiple models to evaluate
     evaluators: list[str] = Field(default_factory=list)
     latent_evaluators: list[str] = Field(
         default_factory=lambda: ["AUCROCEvaluator", "HardNegativeEvaluator"]

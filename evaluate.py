@@ -460,26 +460,42 @@ def eval_steering(
     if select_concept_ids is not None:
         start_concept_id = select_concept_ids[0]
 
+    # Determine which models to evaluate
+    models_to_evaluate = []
+    if args.evaluate.models:
+        # Use the models list if provided
+        models_to_evaluate = args.evaluate.models
+    else:
+        # Fall back to single model_name for backward compatibility
+        models_to_evaluate = [args.model.model_name]
+
+    logger.info(f"Evaluating models: {models_to_evaluate}")
+
     # Create all evaluation tasks - flattened for maximum parallelization
-    model_name = args.model.model_name
     all_tasks = []
-    if model_name not in STEERING_EXCLUDE_MODELS:
-        all_tasks = [
-            (
-                concept_id,
-                current_df,
-                evaluator_name,
-                model_name,
-                args.dataset.dump_dir,
-                args.evaluate.lm_model,
-                args.evaluate.winrate_baseline,
-                {},
+    for model_name in models_to_evaluate:
+        if model_name not in STEERING_EXCLUDE_MODELS:
+            model_tasks = [
+                (
+                    concept_id,
+                    current_df,
+                    evaluator_name,
+                    model_name,
+                    args.dataset.dump_dir,
+                    args.evaluate.lm_model,
+                    args.evaluate.winrate_baseline,
+                    {},
+                )
+                for concept_id, current_df in df_generator
+                if concept_id >= start_concept_id
+                and (select_concept_ids is None or concept_id in select_concept_ids)
+                for evaluator_name in args.evaluate.steering_evaluators
+            ]
+            all_tasks.extend(model_tasks)
+        else:
+            logger.warning(
+                f"Model {model_name} is excluded from steering evaluation, skipping"
             )
-            for concept_id, current_df in df_generator
-            if concept_id >= start_concept_id
-            and (select_concept_ids is None or concept_id in select_concept_ids)
-            for evaluator_name in args.evaluate.steering_evaluators
-        ]
 
     # Group results by concept_id
     all_results = {}
@@ -628,116 +644,11 @@ def load_jsonl(jsonl_path):
     return jsonl_data
 
 
-def plot_latent(dump_dir, report_to=[], wandb_name=None, eval_run="evaluate"):
-    dump_dir = Path(dump_dir) / eval_run
-    # aggregate all results
-    aggregated_results = load_jsonl(os.path.join(dump_dir, "latent.jsonl"))
-    plot_aggregated_roc(
-        aggregated_results,
-        write_to_path=dump_dir,
-        report_to=report_to,
-        wandb_name=wandb_name,
-    )
-    plot_accuracy_bars(
-        aggregated_results,
-        "HardNegativeEvaluator",
-        write_to_path=dump_dir,
-        report_to=report_to,
-        wandb_name=wandb_name,
-    )
-
-
-def eval_latent(
-    args: ExperimentConfig,
-    select_concept_ids=None,
-    eval_run="evaluate",
-    infer_run="inference",
-):
-    # Check if the model has use_latent enabled in the config
-    if not getattr(args.model, "use_latent", False):
-        logger.debug(
-            "Model does not have use_latent enabled. Exiting eval_latent early."
-        )
-        return
-
-    dump_dir = args.dataset.dump_dir
-    latent_data_path = os.path.join(dump_dir, infer_run, "latent_data.parquet")
-    if not os.path.exists(latent_data_path):
-        raise RuntimeError(f"Latent data not found at {latent_data_path}")
-
-    df_generator = data_generator(dump_dir, mode="latent", infer_run=infer_run)
-
-    state = (
-        load_state(args.dataset.dump_dir, mode="latent")
-        if not getattr(args, "ignore_latent_state", False)
-        else None
-    )
-    start_concept_id = state.get("concept_id", 0) if state else 0
-    logger.warning(f"Starting concept_id: {start_concept_id}")
-
-    if select_concept_ids is not None and len(select_concept_ids) > 0:
-        start_concept_id = select_concept_ids[0]
-
-    _all_eval_results = []
-
-    for concept_id, current_df in df_generator:
-        if concept_id < start_concept_id:
-            continue
-        if (
-            select_concept_ids is not None and len(select_concept_ids) > 0
-        ) and concept_id not in select_concept_ids:
-            continue
-        logger.warning(f"Evaluating concept_id: {concept_id}")
-
-        # Initialize a dictionary for storing evaluation results for this `concept_id`
-        eval_results = {}
-        model_name = args.model.model_name
-        if model_name not in LATENT_EXCLUDE_MODELS:
-            for evaluator_name in args.evaluate.latent_evaluators:
-                # Map evaluator names to classes
-                evaluator_classes = {
-                    "LMJudgeEvaluator": LMJudgeEvaluator,
-                    "PerplexityEvaluator": PerplexityEvaluator,
-                    "WinRateEvaluator": WinRateEvaluator,
-                }
-                if evaluator_name not in evaluator_classes:
-                    logger.warning(f"Evaluator {evaluator_name} not found, skipping")
-                    continue
-                evaluator_class = evaluator_classes[evaluator_name]
-                evaluator = evaluator_class(model_name)
-                # Call each evaluator and store results
-                eval_result = evaluator.compute_metrics(current_df)
-                if evaluator.__str__() not in eval_results:
-                    eval_results[evaluator.__str__()] = {}
-                eval_results[evaluator.__str__()][model_name.__str__()] = eval_result
-
-        _all_eval_results.append(eval_results)
-
-        if eval_results:
-            save_results(
-                dump_dir,
-                {"concept_id": concept_id + 1},
-                concept_id,
-                "latent",
-                eval_results,
-                None,
-                eval_run=eval_run,
-            )
-
-    if any(res for res in _all_eval_results):
-        # Generate final plot
-        logger.warning("Generating final plot...")
-        plot_latent(
-            dump_dir, args.evaluate.report_to, args.wandb.run_name, eval_run=eval_run
-        )
-        logger.warning("Evaluation completed!")
-
-
 def log_results_to_wandb(
     dump_dir,
     eval_run,
     infer_run,
-    metadata=None,
+    concept_info=None,
     run=None,
 ):
     """
@@ -747,13 +658,27 @@ def log_results_to_wandb(
         dump_dir (str): Path to the directory with results
         eval_run (str): Name of the evaluation run folder
         infer_run (str): Name of the inference run folder
-        metadata (list, optional): Metadata entries from metadata.jsonl
+        concept_info (list, optional): Concept information from dataset
         run (wandb.Run, optional): Active wandb run object
     """
-    # Collect metadata if not provided
-    if metadata is None and (Path(dump_dir) / "generate" / "metadata.jsonl").is_file():
-        metadata_path = Path(dump_dir) / "generate" / "metadata.jsonl"
-        metadata = load_jsonl(metadata_path)
+    # Get concept info from config if not provided
+    if concept_info is None:
+        try:
+            # Try to load from the saved config
+            config_path = Path(dump_dir) / "config.yaml"
+            if config_path.exists():
+                from omegaconf import OmegaConf
+                from hypersteer.utils.configs import config_to_pydantic, ExperimentConfig
+                
+                cfg = OmegaConf.load(config_path)
+                args = config_to_pydantic(cfg, ExperimentConfig)
+                
+                # Load concept info from dataset
+                from inference import load_dataset_for_inference
+                concept_info = load_dataset_for_inference(args)
+        except Exception as e:
+            logger.warning(f"Could not load concept info from dataset: {e}")
+            concept_info = []
 
     concepts = []
 
@@ -762,7 +687,9 @@ def log_results_to_wandb(
         latent_path = Path(dump_dir) / eval_run / "latent.jsonl"
         latent_results = load_jsonl(latent_path)
         # Check if any model results exist in AUCROCEvaluator
-        lsreft_included = len(latent_results[0]["results"].get("AUCROCEvaluator", {})) > 0
+        lsreft_included = (
+            len(latent_results[0]["results"].get("AUCROCEvaluator", {})) > 0
+        )
         top_logits_path = Path(dump_dir) / infer_run / "top_logits.jsonl"
         top_logits_results = (
             load_jsonl(top_logits_path) if os.path.exists(top_logits_path) else None
@@ -774,11 +701,11 @@ def log_results_to_wandb(
             None,
         )
 
-        if metadata and lsreft_model_name:
+        if concept_info and lsreft_model_name:
             idx = 0
-            for metadata_entry in metadata:
-                concept = metadata_entry["concept"]
-                sae_link = metadata_entry["ref"]
+            for concept_entry in concept_info:
+                concept = concept_entry["concept"]
+                sae_link = concept_entry["ref"]
                 auc = (
                     latent_results[idx]["results"]["AUCROCEvaluator"][
                         lsreft_model_name
@@ -840,7 +767,7 @@ def log_results_to_wandb(
                 wandb.log({"latent/token_heatmap": wandb.Html(heatmap_html)})
 
     # Process steering results if available
-    if (Path(dump_dir) / eval_run / "steering.jsonl").is_file() and metadata:
+    if (Path(dump_dir) / eval_run / "steering.jsonl").is_file() and concept_info:
         steering_path = Path(dump_dir) / eval_run / "steering.jsonl"
         steering_results = load_jsonl(steering_path)
         best_factors = get_best_factors(steering_results)
@@ -859,9 +786,9 @@ def log_results_to_wandb(
 
         if lsreft_model_name:
             idx = 0
-            for metadata_entry in metadata:
-                concept = metadata_entry["concept"]
-                sae_link = metadata_entry["ref"]
+            for concept_entry in concept_info:
+                concept = concept_entry["concept"]
+                sae_link = concept_entry["ref"]
                 winrate = (
                     steering_results[idx]["results"]["WinRateEvaluator"][
                         lsreft_model_name
@@ -958,13 +885,7 @@ def run_eval(args: ExperimentConfig, infer_run="inference"):
             resume="allow",
         )
 
-    if args.evaluate.mode == "latent":
-        eval_latent(args, eval_run=eval_run, infer_run=infer_run)
-    elif "steering" in args.evaluate.mode:  # steering or steering_test
-        eval_steering(args, eval_run=eval_run, infer_run=infer_run)
-    elif args.evaluate.mode == "all":
-        eval_latent(args, eval_run=eval_run, infer_run=infer_run)
-        eval_steering(args, eval_run=eval_run, infer_run=infer_run)
+    eval_steering(args, eval_run=eval_run, infer_run=infer_run)
 
     # Log metadata about the factor selection run to help with traceability
     metadata_path = Path(args.dataset.dump_dir) / eval_run / "eval_metadata.json"
@@ -981,24 +902,40 @@ def run_eval(args: ExperimentConfig, infer_run="inference"):
         json.dump(metadata, f, indent=2)
 
     if args.wandb.log and args.evaluate.report_to == "wandb":
+        # Load concept info for wandb logging
+        try:
+            from inference import load_dataset_for_inference
+            concept_info = load_dataset_for_inference(args)
+        except Exception as e:
+            logger.warning(f"Could not load concept info for wandb logging: {e}")
+            concept_info = None
+            
         log_results_to_wandb(
             dump_dir=args.dataset.dump_dir,
             eval_run=eval_run,
             infer_run=infer_run,
+            concept_info=concept_info,
             run=run if "run" in locals() else None,
         )
 
 
 @hydra.main(config_path="config", config_name="config", version_base=None)
 def main(cfg: DictConfig):
-    pretrained_cfg_path = Path(cfg.experiment.dataset.dump_dir) / "config.yaml"
-    if pretrained_cfg_path.exists():
-        pretrained_cfg = OmegaConf.load(pretrained_cfg_path)
-        cli_cfg = OmegaConf.create(OmegaConf.to_container(cfg.experiment, resolve=True))
-        merged_cfg = OmegaConf.merge(pretrained_cfg, cli_cfg)
-        cfg.experiment = merged_cfg
+    # Simple: just merge experiment overrides into the main config
+    if hasattr(cfg, 'experiment'):
+        merged_cfg = OmegaConf.merge(cfg, cfg.experiment)
+    else:
+        merged_cfg = cfg
+    
+    # Handle pretrained config merging if needed
+    if merged_cfg.dataset.dump_dir:
+        pretrained_cfg_path = Path(merged_cfg.dataset.dump_dir) / "config.yaml"
+        if pretrained_cfg_path.exists():
+            logger.info(f"Loading pretrained config from {pretrained_cfg_path}")
+            pretrained_cfg = OmegaConf.load(pretrained_cfg_path)
+            merged_cfg = OmegaConf.merge(pretrained_cfg, merged_cfg)
 
-    config = config_to_pydantic(cfg.experiment, ExperimentConfig)
+    config = config_to_pydantic(merged_cfg, ExperimentConfig)
     run_eval(config, infer_run=config.evaluate.infer_run or "inference")
 
 

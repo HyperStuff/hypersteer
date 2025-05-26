@@ -1,7 +1,5 @@
-# @package _global_
 defaults:
   - _self_
-
 # Core model parameters
 model_name: "google/gemma-2-2b-it"
 base_model_name: "google/gemma-2-2b"
@@ -32,21 +30,21 @@ reconstruction_dict_path: null
 
 # Visualization configs
 logit_diff_visualization:
-  log_heatmap: true
+  log_heatmap: false
   log_heatmap_freq: 10
   pdf_visualization: false
   png_visualization: false
   log_all_examples: true
 
 cross_attn_heatmap_visualization:
-  log_heatmap: true
+  log_heatmap: false
   log_heatmap_freq: 10
   pdf_visualization: false
   png_visualization: false
   log_all_examples: true
 
 mask_visualization:
-  log_heatmap: true
+  log_heatmap: false
   log_heatmap_freq: 10
   pdf_visualization: false
   png_visualization: false

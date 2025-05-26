@@ -1,3 +1,4 @@
+# Base configuration - uses existing config directories for defaults
 defaults:
   - _self_
   - dataset: base
@@ -7,18 +8,13 @@ defaults:
   - evaluate: base
   - generate: base
   - wandb: base
-  - experiment: base  # Use base experiment by default
-  - override hydra/launcher: ray_jobs
+  - launcher: base  # Default to base launcher, can be overridden
+  - experiment: base # Load experiment overrides last
   - override hydra/job_logging: colorlog
   - override hydra/hydra_logging: colorlog
 
+# Hydra configuration
 hydra:
-  launcher:
-    poll_jobs: false
-    entrypoint_num_gpus: 1
-    enable_gpu_blocking: false
-    entrypoint_resources:
-      axbench-main: 1
   job:
     env_set:
       OPENAI_DRY_RUN: 0

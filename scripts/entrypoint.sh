@@ -85,5 +85,28 @@ if [ ! -z "${RAY_HEAD_ADDRESS}" ]; then
     fi
 fi
 
+# Run /usr/local/bin/install.sh with SYSTEM_VARIANT if it exists
+if [ -f /usr/local/bin/install.sh ]; then
+    echo "🔧 Running /usr/local/bin/install.sh with SYSTEM_VARIANT=${SYSTEM_VARIANT:-cuda}..."
+    SYSTEM_VARIANT="${SYSTEM_VARIANT:-cuda}" /usr/local/bin/install.sh
+else
+    echo "⚠️  /usr/local/bin/install.sh not found, skipping installation"
+fi
+
+# Run pre-commit install if pre-commit is available
+if command -v pre-commit &>/dev/null; then
+    echo "🔧 Running pre-commit install..."
+    pre-commit install
+else
+    echo "⚠️  pre-commit not found, skipping pre-commit install"
+fi
+
+if command -v ai-commit &>/dev/null; then
+    echo "🔧 Running ai-commit install-hook..."
+    ai-commit install-hook
+else
+    echo "⚠️  ai-commit command not found, skipping AI commit hook installation"
+fi
+
 # Execute the command passed to docker run
 exec "$@"

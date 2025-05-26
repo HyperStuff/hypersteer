@@ -1,3 +1,4 @@
+# NOTE: deprecated. need to implement the training dataset creation in a more general way.
 # generate script for creating the training dataset for concepts.
 # we assume we group two concepts into a learning group.
 # it is possible to extend to more concepts into the same group,

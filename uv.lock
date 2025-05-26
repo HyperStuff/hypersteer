@@ -51,6 +51,17 @@ wheels = [
 ]
 
 [[package]]
+name = "ai-commit"
+version = "0.1.0"
+source = { git = "https://github.com/sidnb13/ai_commit#4ba5ec09348e5b4f9201c9f0fcd1bc6695f2b11f" }
+dependencies = [
+    { name = "openai" },
+    { name = "pre-commit" },
+    { name = "python-dotenv" },
+    { name = "together" },
+]
+
+[[package]]
 name = "aiohappyeyeballs"
 version = "2.6.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1174,6 +1185,7 @@ cpu = [
     { name = "torchvision", version = "0.22.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform != 'darwin'" },
 ]
 dev = [
+    { name = "ai-commit" },
     { name = "ipykernel" },
     { name = "jupyter" },
     { name = "pre-commit" },
@@ -1191,6 +1203,7 @@ reft = [
 [package.metadata]
 requires-dist = [
     { name = "adjusttext", specifier = ">=1.0.0" },
+    { name = "ai-commit", marker = "extra == 'dev'", git = "https://github.com/sidnb13/ai_commit" },
     { name = "datasets", specifier = ">=2.14.0" },
     { name = "einops", specifier = ">=0.8.0" },
     { name = "flash-attn", marker = "extra == 'flash-attn'", specifier = ">=2.0.0" },

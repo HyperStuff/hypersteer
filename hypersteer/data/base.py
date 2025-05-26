@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Dict, Type, Any, Optional
+from typing import Dict, Type, Callable
 import pandas as pd
 
 
@@ -23,6 +23,28 @@ class DatasetFactoryRegistry:
     def list_factories(cls) -> list:
         """List all registered factory names"""
         return list(cls._factories.keys())
+
+
+class TrainingDatasetRegistry:
+    """Simple registry for training dataset functions"""
+    _functions: Dict[str, Callable] = {}
+    
+    @classmethod
+    def register(cls, name: str, function: Callable):
+        """Register a training dataset function"""
+        cls._functions[name] = function
+    
+    @classmethod
+    def get_function(cls, name: str) -> Callable:
+        """Get a registered training dataset function"""
+        if name not in cls._functions:
+            raise ValueError(f"Unknown training dataset function: {name}. Available: {list(cls._functions.keys())}")
+        return cls._functions[name]
+    
+    @classmethod
+    def list_functions(cls) -> list:
+        """List all registered function names"""
+        return list(cls._functions.keys())
 
 
 class BaseDatasetFactory(ABC):
@@ -97,4 +119,12 @@ def register_factory(name: str):
     def decorator(cls):
         DatasetFactoryRegistry.register(name, cls)
         return cls
+    return decorator
+
+
+def register_training_dataset(name: str):
+    """Decorator to register a training dataset function"""
+    def decorator(func):
+        TrainingDatasetRegistry.register(name, func)
+        return func
     return decorator 

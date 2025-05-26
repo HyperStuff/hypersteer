@@ -1,7 +1,5 @@
-# @package _global_
 defaults:
   - _self_
-
 use_bf16: true
 mode: "all"
 model_name: "google/gemma-2-2b-it"

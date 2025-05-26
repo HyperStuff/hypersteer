@@ -184,6 +184,10 @@ class InterventionDataCollator:
                 inst["concept_input_ids"] != self.concept_tokenizer.pad_token_id
             ).int()
 
+            # hypernetwork only sees prompt
+            inst["hypernet_input_mask"] = inst["attention_mask"]
+            inst["hypernet_input_mask"][inst["prompt_lengths"] :] = 0
+
         batch_inputs = self.data_collator(instances)
         return batch_inputs
 

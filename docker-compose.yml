@@ -28,6 +28,7 @@ services:
     environment:
       - CONTAINER_ID=${CONTAINER_NAME}
       - RAY_HEAD_ADDRESS=localhost:6379
+      # No need for port mapping with host networking
     deploy:
       resources:
         reservations:

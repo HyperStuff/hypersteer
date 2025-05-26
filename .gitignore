@@ -2,6 +2,7 @@
 assets/
 multirun/
 outputs/
+data/axbench/concept16k_v2
 
 core.*
 

@@ -25,29 +25,29 @@ WORKDIR /workspace/${PROJECT_NAME}
 RUN git config --global user.email "${GIT_EMAIL}" && \
     git config --global user.name "${GIT_NAME}"
 
-# COPY all requirements files
-COPY requirements*.txt ./
+# Copy project files for uv
+COPY pyproject.toml uv.lock ./
 
-RUN uv pip install --system --no-cache-dir "ray[default]==2.44.0"
-
-# Install system variant specific requirements if available
-RUN if [ -f "requirements-${VARIANT}.txt" ]; then \
-    echo "Installing ${VARIANT} specific requirements..." && \
-    uv pip install --system --no-cache-dir -r "requirements-${VARIANT}.txt"; \
+# Install dependencies using uv with appropriate extras
+RUN echo "Installing dependencies with uv..." && \
+    if [ "${VARIANT}" = "cpu" ]; then \
+        uv sync --locked --extra dev --extra cpu; \
+    elif [ "${VARIANT}" = "cuda" ]; then \
+        uv sync --locked --extra dev --extra cuda; \
+    elif [ "${VARIANT}" = "cuda-nightly" ]; then \
+        uv sync --locked --extra dev --extra cuda-nightly; \
     else \
-    echo "No ${VARIANT} specific requirements file found"; \
+        uv sync --locked --extra dev --extra cuda; \
     fi
 
-# Install environment variant specific requirements if available and not default
-RUN if [ "${ENV_VARIANT}" != "default" ] && [ -f "requirements-${ENV_VARIANT}.txt" ]; then \
-    echo "Installing ${ENV_VARIANT} specific requirements..." && \
-    uv pip install --system --no-cache-dir -r "requirements-${ENV_VARIANT}.txt"; \
-    elif [ "${ENV_VARIANT}" != "default" ]; then \
-    echo "No ${ENV_VARIANT} specific requirements file found"; \
+# Install ray if needed for the environment variant
+RUN if [ "${ENV_VARIANT}" = "ray" ]; then \
+        echo "Installing ray extras..." && \
+        uv sync --locked --extra ray; \
     fi
 
-# Always install ipdb for debugging (system-wide)
-RUN uv pip install --system --no-cache-dir ipdb
+# Always install ipdb for debugging
+RUN uv pip install --system ipdb
 
 COPY scripts/ray-init.sh /usr/local/bin/ray-init.sh
 RUN chmod +x /usr/local/bin/ray-init.sh

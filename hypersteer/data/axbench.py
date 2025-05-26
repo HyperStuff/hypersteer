@@ -4,12 +4,12 @@ import time
 from collections import namedtuple
 
 import pandas as pd
-from datasets import load_from_disk
+from datasets import concatenate_datasets, load_dataset, load_from_disk
 
-from hypersteer.utils.constants import EMPTY_CONCEPT
+from hypersteer.utils.constants import CHAT_MODELS, EMPTY_CONCEPT
 from hypersteer.utils.helpers import get_logger
 from hypersteer.utils.language_models import LanguageModel
-from hypersteer.utils.model_utils import get_model_continues
+from hypersteer.utils.model_utils import get_model_continues, get_suffix_length
 from hypersteer.utils.prompt_utils import (
     continue_with_concept,
     continue_with_polysemantic_concepts,
@@ -21,7 +21,13 @@ from hypersteer.utils.prompt_utils import (
     response_with_polysemantic_concepts,
     response_without_concept,
 )
-from .base import BaseDatasetFactory, BaseSteeringDatasetFactory, register_factory
+
+from .base import (
+    BaseDatasetFactory,
+    BaseSteeringDatasetFactory,
+    register_factory,
+    register_training_dataset,
+)
 
 logger = get_logger(__name__)
 
@@ -49,6 +55,309 @@ async def run_tasks(tasks):
     # Gather and run all provided tasks concurrently, and collect their results
     results = await asyncio.gather(*tasks)
     return results
+
+
+def apply_chat_template_llama(
+    example, tokenizer, suffix_length, binarize=False, output_length=None
+):
+    """Apply chat template for Llama models"""
+    if binarize:
+        messages = [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": example["input"]},
+            {"role": "assistant", "content": example["output"]},
+        ]
+        nobos = tokenizer.apply_chat_template(
+            messages,
+            tokenize=True,
+            add_generation_prompt=True,
+        )[1:-suffix_length]
+        return {"input": tokenizer.decode(nobos)}
+    else:
+        # For instruction tuning
+        messages = [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": example["input"]},
+        ]
+        nobos = tokenizer.apply_chat_template(
+            messages,
+            tokenize=True,
+            add_generation_prompt=True,
+        )[1:]
+        formatted_input = tokenizer.decode(nobos)
+
+        # Handle output
+        suffix_str = tokenizer.decode([tokenizer.eos_token_id])
+        if output_length and len(tokenizer.tokenize(example["output"])) < output_length:
+            formatted_output = example["output"] + suffix_str
+        else:
+            formatted_output = example["output"]
+
+        return {"input": formatted_input, "output": formatted_output}
+
+
+def apply_chat_template_generic(
+    example, tokenizer, suffix_length, binarize=False, output_length=None
+):
+    """Apply chat template for generic models"""
+    if binarize:
+        messages = [
+            {"role": "user", "content": example["input"]},
+            {"role": "assistant", "content": example["output"]},
+        ]
+        nobos = tokenizer.apply_chat_template(
+            messages,
+            tokenize=True,
+            add_generation_prompt=True,
+        )[1:-suffix_length]
+        return {"input": tokenizer.decode(nobos)}
+    else:
+        # For instruction tuning
+        messages = [{"role": "user", "content": example["input"]}]
+        nobos = tokenizer.apply_chat_template(
+            messages,
+            tokenize=True,
+            add_generation_prompt=True,
+        )[1:]
+        return {"input": tokenizer.decode(nobos), "output": example["output"]}
+
+
+def apply_no_chat_template(example, tokenizer, binarize=False):
+    """Apply no chat template for non-chat models"""
+    if binarize:
+        return {"input": example["input"] + example["output"]}
+    else:
+        return {"input": example["input"], "output": example["output"]}
+
+
+def process_dataset_for_training(
+    dataset,
+    tokenizer,
+    model_name,
+    binarize=False,
+    train_on_negative=False,
+    output_length=None,
+    max_num_of_examples=None,
+    negative_example_ratio=1,
+    replace_negative_description=True,
+):
+    """
+    Process HuggingFace dataset for training using map functions.
+
+    Args:
+        dataset: HuggingFace Dataset
+        tokenizer: Tokenizer instance
+        model_name: Name of the model
+        binarize: Whether to binarize the dataset
+        train_on_negative: Whether to include negative examples in training
+        output_length: Output length for chat models
+        max_num_of_examples: Maximum number of examples per concept
+        negative_example_ratio: Ratio of negative to positive examples
+        replace_negative_description: Whether to replace negative descriptions
+
+    Returns:
+        Processed HuggingFace Dataset ready for training
+    """
+    suffix_length, suffix_str = get_suffix_length(tokenizer)
+    is_chat_model = model_name in CHAT_MODELS if model_name else False
+
+    # Filter positive and negative examples
+    positive_dataset = dataset.filter(
+        lambda x: x["output_concept"] != EMPTY_CONCEPT and x["category"] == "positive"
+    )
+    negative_dataset = dataset.filter(
+        lambda x: x["output_concept"] == EMPTY_CONCEPT and x["category"] == "negative"
+    )
+
+    # Limit examples if specified
+    if max_num_of_examples and max_num_of_examples > 0:
+        positive_dataset = positive_dataset.select(
+            range(min(max_num_of_examples // 2, len(positive_dataset)))
+        )
+        negative_dataset = negative_dataset.select(
+            range(min(max_num_of_examples // 2, len(negative_dataset)))
+        )
+
+    # Handle negative example ratio
+    if negative_example_ratio is not None and len(negative_dataset) > 0:
+        # Group positive examples by concept_id
+        concept_ids = list(set(positive_dataset["concept_id"]))
+
+        processed_negative_examples = []
+        for concept_id in concept_ids:
+            concept_positive = positive_dataset.filter(
+                lambda x: x["concept_id"] == concept_id
+            )
+            if len(concept_positive) == 0:
+                continue
+
+            positive_example_per_concept = len(concept_positive)
+            negative_example_per_concept = int(
+                positive_example_per_concept * negative_example_ratio
+            )
+
+            # Sample negative examples for this concept
+            if negative_example_per_concept > 0 and len(negative_dataset) > 0:
+                # Get the concept description from positive examples
+                concept_description = concept_positive[0]["output_concept"]
+
+                # Sample negative examples
+                sampled_indices = list(
+                    range(min(negative_example_per_concept, len(negative_dataset)))
+                )
+                concept_negative = negative_dataset.select(sampled_indices)
+
+                # Replace description if needed
+                if replace_negative_description:
+
+                    def update_negative_example(example):
+                        example["output_concept"] = concept_description
+                        example["concept_id"] = concept_id
+                        return example
+
+                    concept_negative = concept_negative.map(update_negative_example)
+
+                processed_negative_examples.append(concept_negative)
+
+        # Combine all negative examples
+        if processed_negative_examples:
+            negative_dataset = concatenate_datasets(processed_negative_examples)
+
+    # Combine datasets based on training mode
+    if train_on_negative and len(negative_dataset) > 0:
+        combined_dataset = concatenate_datasets([positive_dataset, negative_dataset])
+    else:
+        combined_dataset = positive_dataset
+
+    # Apply chat templates
+    if is_chat_model:
+        if model_name == "meta-llama/Llama-3.1-8B-Instruct":
+
+            def template_fn(x):
+                return apply_chat_template_llama(
+                    x, tokenizer, suffix_length, binarize, output_length
+                )
+        else:
+
+            def template_fn(x):
+                return apply_chat_template_generic(
+                    x, tokenizer, suffix_length, binarize, output_length
+                )
+    else:
+
+        def template_fn(x):
+            return apply_no_chat_template(x, tokenizer, binarize)
+
+    # Apply the template function
+    processed_dataset = combined_dataset.map(template_fn, num_proc=4)
+
+    # Add labels for binarized datasets
+    if binarize:
+
+        def add_labels(example):
+            if example.get("category") == "positive":
+                example["labels"] = 1
+            else:
+                example["labels"] = 0
+            return example
+
+        processed_dataset = processed_dataset.map(add_labels)
+
+    return processed_dataset
+
+
+@register_training_dataset("axbench")
+def get_training_dataset(
+    dataset_name,
+    data_files=None,
+    split="train",
+    cache_dir=None,
+    tokenizer=None,
+    model_name=None,
+    binarize=False,
+    train_on_negative=False,
+    output_length=None,
+    max_num_of_examples=None,
+    negative_example_ratio=1,
+    replace_negative_description=True,
+    select_concept_ids=None,
+    max_concepts=None,
+    **kwargs,
+):
+    """
+    Load and process AxBench training dataset from HuggingFace.
+
+    Args:
+        dataset_name: Name of the dataset on HuggingFace Hub
+        data_files: Optional dict specifying data files to load
+        split: Dataset split to load
+        cache_dir: Optional cache directory
+        tokenizer: Tokenizer instance
+        model_name: Name of the model
+        binarize: Whether to binarize the dataset
+        train_on_negative: Whether to include negative examples in training
+        output_length: Output length for chat models
+        max_num_of_examples: Maximum number of examples per concept
+        negative_example_ratio: Ratio of negative to positive examples
+        replace_negative_description: Whether to replace negative descriptions
+        select_concept_ids: List of concept IDs to select
+        max_concepts: Maximum number of concepts to include
+        **kwargs: Additional arguments
+
+    Returns:
+        Processed HuggingFace Dataset ready for training
+    """
+    logger.info(f"Loading training dataset {dataset_name} with files {data_files}")
+
+    # Load dataset from HuggingFace
+    dataset = load_dataset(
+        dataset_name,
+        data_files=data_files,
+        split=split,
+        cache_dir=cache_dir,
+    )
+
+    logger.info(f"Loaded dataset with {len(dataset)} examples")
+
+    # Filter by concept IDs if specified
+    if select_concept_ids:
+        dataset = dataset.filter(
+            lambda x: x["concept_id"] in select_concept_ids, num_proc=4
+        )
+        logger.info(f"Filtered to {len(dataset)} examples for selected concepts")
+
+    # Limit concepts if specified
+    if max_concepts:
+        concept_ids = list(set(dataset["concept_id"]))
+        concept_ids = [
+            cid for cid in concept_ids if cid >= 0
+        ]  # Filter out negative concept IDs
+        concept_ids.sort()
+        limited_concept_ids = concept_ids[:max_concepts]
+
+        dataset = dataset.filter(
+            lambda x: x["concept_id"] in limited_concept_ids, num_proc=4
+        )
+        logger.info(f"Limited to {max_concepts} concepts with {len(dataset)} examples")
+
+    # Process dataset for training
+    if tokenizer is not None and model_name is not None:
+        dataset = process_dataset_for_training(
+            dataset=dataset,
+            tokenizer=tokenizer,
+            model_name=model_name,
+            binarize=binarize,
+            train_on_negative=train_on_negative,
+            output_length=output_length,
+            max_num_of_examples=max_num_of_examples,
+            negative_example_ratio=negative_example_ratio,
+            replace_negative_description=replace_negative_description,
+        )
+        logger.info(
+            f"Processed dataset with {len(dataset)} examples ready for training"
+        )
+
+    return dataset
 
 
 @register_factory("axbench")
@@ -169,6 +478,33 @@ class AxbenchDatasetFactory(BaseDatasetFactory):
             self.logger.warning(
                 f"Finished creating negative examples in {round(time.time() - start, 3)} sec."
             )
+
+    def load_hf_dataset(
+        self, dataset_name, data_files=None, split="train", cache_dir=None
+    ):
+        """
+        Load dataset from HuggingFace Hub.
+
+        Args:
+            dataset_name: Name of the dataset on HuggingFace Hub
+            data_files: Optional dict specifying data files to load
+            split: Dataset split to load
+            cache_dir: Optional cache directory
+
+        Returns:
+            Loaded HuggingFace Dataset
+        """
+        logger.debug(f"Loading dataset {dataset_name} with files {data_files}")
+
+        dataset = load_dataset(
+            dataset_name,
+            data_files=data_files,
+            split=split,
+            cache_dir=cache_dir,
+        )
+
+        logger.debug(f"Loaded dataset with {len(dataset)} examples")
+        return dataset
 
     def save_cache(self):
         """Save the language model cache before exiting"""
@@ -824,4 +1160,4 @@ class AxbenchSteeringDatasetFactory(BaseSteeringDatasetFactory):
                 # not implemented yet.
                 raise NotImplementedError(
                     f"Steering dataset {dataset_name} not implemented."
-                ) 
+                )

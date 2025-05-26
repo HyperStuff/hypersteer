@@ -1,0 +1,12 @@
+# @package _global_
+defaults:
+  - _self_
+
+hydra:
+  launcher:
+    _target_: hydra_plugins.hydra_ray_jobs_launcher.ray_jobs_launcher.RayJobsLauncher
+    poll_jobs: false
+    entrypoint_num_gpus: 1
+    enable_gpu_blocking: false
+    entrypoint_resources:
+      hypersteer-main: 1

@@ -1,9 +1,5 @@
-# @package _global_
-defaults:
-  - _self_
-
-# Base experiment - uses all the individual base configs
-# This should be minimal and only override specific values needed for this experiment
+# Base experiment - minimal overrides for basic functionality
+# This is the default experiment that gets loaded when experiment: base
 
 # Training overrides
 train:
@@ -50,6 +46,7 @@ dataset:
 
 # Wandb overrides
 wandb:
+  log: true
   project: ${oc.env:WANDB_PROJECT,axbench-hypersteer}
   entity: ${oc.env:WANDB_ENTITY,null}
   run_name: ${oc.env:WANDB_RUN_NAME,null}

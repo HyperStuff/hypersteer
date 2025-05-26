@@ -3,15 +3,14 @@ defaults:
   - base
 
 # HyperSteer-specific overrides
-hypernet_type: "regression"
+hypernet_type: "attn"
 cross_attn_hidden_layers: 8
 use_selection_head: true
 use_selection_ln: true
 
-# Enhanced visualization for hypersteer
-cross_attn_heatmap_visualization:
+mask_visualization:
   log_heatmap: true
-  log_heatmap_freq: 5  # More frequent logging for hypersteer
-  pdf_visualization: true
-  png_visualization: true
-  log_all_examples: true 
+  log_heatmap_freq: 10
+  pdf_visualization: false
+  png_visualization: false
+  log_all_examples: true

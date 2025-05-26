@@ -1,4 +1,3 @@
-# @package _global_
 defaults:
   - _self_
 
@@ -27,3 +26,20 @@ select_concept_ids: []
 held_out_eval: false
 input_condition_concept: false
 max_seq_length: null
+
+# HuggingFace dataset configuration
+hf_dataset_name: null
+hf_data_files: null
+hf_split: "train"
+hf_cache_dir: null
+hf_revision: null
+hf_use_auth_token: null
+hf_streaming: false
+hf_num_proc: null
+hf_keep_in_memory: false
+hf_download_config: null
+hf_download_mode: null
+hf_verification_mode: null
+hf_ignore_verifications: false
+hf_save_infos: false
+hf_trust_remote_code: false

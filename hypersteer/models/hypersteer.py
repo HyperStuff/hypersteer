@@ -23,8 +23,8 @@ from transformers import (
     AutoTokenizer,
 )
 
-from hypersteer.training import TrainerMixin
 from hypersteer.data.utils import get_batch_locs, make_data_module
+from hypersteer.training import TrainerMixin
 from hypersteer.utils.helpers import (
     configure_tokenizer_model,
     get_logger,
@@ -34,11 +34,11 @@ from hypersteer.utils.helpers import (
 from hypersteer.utils.patch import monkeypatch_ax_model_generate
 from hypersteer.utils.visualization import Visualizer
 
+from .base import register_model
 from .hypernet.configuration_hypernet import HypernetConfig
 from .hypernet.modeling_hypernet import HypernetModel
 from .interventions import HyperAdditiveIntervention
 from .model import Model
-from .base import register_model
 
 logger = get_logger(__name__)
 
@@ -375,19 +375,7 @@ class HyperSteer(Model, TrainerMixin):
         if wandb.run and (not dist.is_initialized() or dist.get_rank() == 0):
             wandb.log(log_dict)
 
-        # Log to logger
-        if mode == "val":
-            log_str = (
-                f"[val] step {metrics.get('val_step', 'unknown')} | "
-                + " | ".join(
-                    f"{k}: {v:.6f}" if isinstance(v, float) else f"{k}: {v}"
-                    for k, v in log_dict.items()
-                )
-            )
-        else:
-            log_str = str(log_dict)
-
-        logger.info(log_str)
+        logger.info(log_dict)
 
     def on_validation_start(self, global_step):
         """Called at the start of validation."""

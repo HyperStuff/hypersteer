@@ -1,4 +1,3 @@
-# @package _global_
 defaults:
   - base
 
@@ -10,3 +9,9 @@ max_concepts: 100
 num_of_examples: -1
 cache_dir: "assets/cache"
 concept_path: "data/axbench/gemma-2-2b_20-gemmascope-res-16k.json"
+
+# HuggingFace dataset configuration
+hf_dataset_name: "pyvene/axbench-concept500"
+hf_data_files:
+  train: "2b/l10/train/data.parquet"
+hf_split: "train"

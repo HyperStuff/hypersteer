@@ -3,7 +3,6 @@ import datetime
 import gc
 import json
 import os
-import pickle
 import time
 from pathlib import Path
 
@@ -19,7 +18,6 @@ from openai import AsyncOpenAI
 from optuna.samplers import TPESampler
 from transformers import AutoModelForCausalLM, AutoTokenizer, set_seed
 
-from hypersteer import get_model
 from evaluate import (
     combine_scores_per_concept,
     eval_steering,
@@ -27,6 +25,7 @@ from evaluate import (
     plot_steering,
     run_eval,
 )
+from hypersteer import get_model
 from hypersteer.data import get_steering_dataset_factory
 from hypersteer.utils.configs import (
     ExperimentConfig,
@@ -37,8 +36,6 @@ from hypersteer.utils.constants import *  # noqa: F403
 from hypersteer.utils.constants import (
     CONFIG_FILE,
     HYPERNETWORK_MODELS,
-    INFER_STATE_FILE,
-    METADATA_FILE,
     STEERING_EXCLUDE_MODELS,
 )
 from hypersteer.utils.dry_run import patch_client
@@ -53,7 +50,6 @@ from hypersteer.utils.helpers import (
     get_logger,
     get_rank,
     get_world_size,
-    setup_file_logging,
 )
 from hypersteer.utils.model_utils import get_prefix_length, get_suffix_length
 
@@ -111,90 +107,58 @@ def load_config(config_path):
     return d
 
 
-def load_state(dump_dir, mode, rank, subfolder="inference"):
+def load_dataset_for_inference(args):
     """
-    Load the state from a file if it exists.
+    Load HuggingFace dataset for inference and extract concept information.
     """
-    state_path = os.path.join(
-        f"{dump_dir}/{subfolder}", f"{mode}_{INFER_STATE_FILE}_rank_{rank}"
+    from hypersteer.data import get_training_dataset
+    
+    # Load the dataset using the same function as training
+    dataset = get_training_dataset(
+        dataset_type="axbench",
+        dataset_name=args.dataset.hf_dataset_name,
+        data_files=args.dataset.hf_data_files,
+        split=args.dataset.hf_split,
+        cache_dir=args.dataset.cache_dir,
+        select_concept_ids=args.dataset.select_concept_ids,
+        max_concepts=args.dataset.max_concepts,
     )
-    if os.path.exists(state_path):
-        with open(state_path, "rb") as f:
-            return pickle.load(f)
-    return None
-
-
-def save_state(dump_dir, state, partition, rank, subfolder="inference"):
-    dump_dir = Path(dump_dir) / subfolder
-    dump_dir.mkdir(parents=True, exist_ok=True)
-    # Save state
-    state_path = os.path.join(dump_dir, f"{partition}_{INFER_STATE_FILE}_rank_{rank}")
-    with open(state_path, "wb") as f:
-        pickle.dump(state, f)
-
-
-def load_metadata_flatten(metadata_path):
-    """
-    Load flatten metadata from a JSON lines file.
-    """
-    metadata = []
-    with open(Path(metadata_path) / METADATA_FILE) as f:
-        for line in f:
-            data = json.loads(line)
-            concept, ref = data["concept"], data["ref"]
-            concept_genres_map = data["concept_genres_map"][concept]
-            ref = data["ref"]
-            flatten_data = {
-                "concept": concept,
-                "ref": ref,
-                "concept_genres_map": {concept: concept_genres_map},
-                "concept_id": data["concept_id"],
-            }
-            metadata += [flatten_data]  # Return the metadata as is
-    return metadata
-
-
-def save(dump_dir, partition, current_df, rank, subfolder="inference"):
-    # This function saves DataFrames per rank per partition (steering)
-    dump_dir = Path(dump_dir) / subfolder
-    dump_dir.mkdir(parents=True, exist_ok=True)
-    # Save DataFrame
-    df_path = os.path.join(dump_dir, f"rank_{rank}_{partition}_data.parquet")
-
-    if os.path.exists(df_path):
-        existing_df = pd.read_parquet(df_path)
-        combined_df = pd.concat([existing_df, current_df], ignore_index=True)
-    else:
-        combined_df = current_df
-
-    combined_df.to_parquet(df_path, engine="pyarrow")
-
-
-def partition_concept_ids(concept_ids, world_size):
-    concept_ids_per_rank = []
-    n = len(concept_ids)
-    chunk_size = n // world_size
-    remainder = n % world_size
-    start = 0
-    for i in range(world_size):
-        end = start + chunk_size + (1 if i < remainder else 0)
-        concept_ids_per_rank.append(concept_ids[start:end])
-        start = end
-    return concept_ids_per_rank
+    
+    # Extract unique concept information from the dataset
+    df = dataset.to_pandas()
+    concept_info = []
+    
+    # Get unique concepts with their IDs
+    unique_concepts = df.groupby('concept_id').first()
+    
+    for concept_id, row in unique_concepts.iterrows():
+        if concept_id >= 0:  # Skip negative concept IDs
+            concept_info.append({
+                "concept_id": concept_id,
+                "concept": row.get("input_concept", f"concept_{concept_id}"),
+                "ref": f"https://neuronpedia.org/api/feature/{concept_id}",  # Default SAE link format
+                "concept_genres_map": {row.get("input_concept", f"concept_{concept_id}"): ["text"]},
+            })
+    
+    return concept_info
 
 
 def create_data_steering(
     dataset_factory,
-    metadata,
+    concept_info,
     concept_id,
     num_of_examples,
     steering_factors,
     steering_datasets,
     args: InferenceConfig,
 ):
-    # prepare concept related data.
-    concept = metadata[concept_id]["concept"]
-    sae_link = metadata[concept_id]["ref"]
+    # Find concept info for this concept_id
+    concept_data = next((c for c in concept_info if c["concept_id"] == concept_id), None)
+    if concept_data is None:
+        raise ValueError(f"Concept ID {concept_id} not found in dataset")
+    
+    concept = concept_data["concept"]
+    sae_link = concept_data["ref"]
     sae_id = int(sae_link.split("/")[-1])
 
     current_df = dataset_factory.create_eval_df(
@@ -245,17 +209,6 @@ def prepare_df(current_df, tokenizer, is_chat_model, model_name):
     return current_df
 
 
-def load_selected_layer(dump_dir, logger):
-    selected_layer_path = Path(dump_dir) / "selected_layer.json"
-    if not selected_layer_path.exists():
-        return None
-    with open(selected_layer_path) as f:
-        data = json.load(f)
-    # Support both old (int) and new (dict) formats
-    selected_layer = data["selected_layer"]
-    return selected_layer
-
-
 def infer_steering(
     args: ExperimentConfig,
     rank,
@@ -264,26 +217,15 @@ def infer_steering(
     logger,
     infer_run="inference",
 ):
-    data_dir = args.dataset.eval_data_dir
     train_dir = args.dataset.train_dir
     dump_dir = args.dataset.dump_dir
     num_of_examples = args.inference.steering_num_of_examples
-    metadata = load_metadata_flatten(data_dir)
+    concept_info = load_dataset_for_inference(args)
     steering_factors = args.inference.steering_factors
     steering_datasets = args.inference.steering_datasets
 
-    state = load_state(args.dataset.dump_dir, "steering", rank, subfolder=infer_run)
-    last_concept_id_processed = (
-        state.get("last_concept_id", None)
-        if state and not args.inference.ignore_steering_state
-        else None
-    )
-    logger.warning(
-        f"Rank {rank} last concept_id processed: {last_concept_id_processed}"
-    )
-
     # Get list of all concept_ids
-    concept_ids = [metadata[i]["concept_id"] for i in range(len(metadata))]
+    concept_ids = [info["concept_id"] for info in concept_info]
 
     if args.dataset.select_concept_ids:
         concept_ids = [
@@ -298,17 +240,11 @@ def infer_steering(
 
         logger.debug(f"Selected concept IDs: {concept_ids}")
 
-    # Partition concept_ids among ranks sequentially
-    concept_ids_per_rank = partition_concept_ids(concept_ids, world_size)
-    my_concept_ids = concept_ids_per_rank[rank]
-
-    if last_concept_id_processed is not None:
-        if last_concept_id_processed in my_concept_ids:
-            idx = my_concept_ids.index(last_concept_id_processed)
-            my_concept_ids = my_concept_ids[idx + 1 :]
-        else:
-            # If last_concept_id_processed is not in my_concept_ids, process all
-            pass
+    # For now, only rank 0 processes all concepts (proper distributed inference will be implemented later)
+    if rank == 0:
+        my_concept_ids = concept_ids
+    else:
+        my_concept_ids = []  # Other ranks do nothing for now
 
     if len(my_concept_ids) == 0:
         logger.info("No concepts to process. Exiting.")
@@ -381,7 +317,7 @@ def infer_steering(
 
     cache_dir = Path(args.dataset.cache_dir or "assets/data/axbench/cache")
     cache_dir.mkdir(parents=True, exist_ok=True)
-    cache_key = get_cache_key(args.inference, my_concept_ids, metadata, is_latent=False)
+    cache_key = get_cache_key(args.inference, my_concept_ids, concept_info, is_latent=False)
     cache_file = os.path.join(cache_dir, f"steering_data_cache_{cache_key}.parquet")
 
     # Try to load from cache first
@@ -408,7 +344,7 @@ def infer_steering(
         for concept_id in my_concept_ids:
             current_df, (_, sae_link, sae_id) = create_data_steering(
                 dataset_factory,
-                metadata,
+                concept_info,
                 concept_id,
                 num_of_examples,
                 steering_factors,
@@ -433,105 +369,47 @@ def infer_steering(
             cached_df.to_parquet(cache_file)
             logger.info(f"Cached steering data to {cache_file}")
 
-    selected_layer_map = load_selected_layer(dump_dir, logger)
-    model_name = args.model.model_name
+    # Determine which models to run inference on
+    models_to_run = []
+    if args.inference.models:
+        # Use the models list if provided
+        models_to_run = args.inference.models
+    else:
+        # Fall back to single model_name for backward compatibility
+        models_to_run = [args.model.model_name]
 
-    # Check if model is excluded from steering
-    if model_name in STEERING_EXCLUDE_MODELS:
-        logger.warning(f"Model {model_name} is excluded from steering, skipping all concepts")
+    logger.info(f"Running inference on models: {models_to_run}")
+
+    # Check if any models are excluded from steering
+    valid_models = [
+        model for model in models_to_run if model not in STEERING_EXCLUDE_MODELS
+    ]
+    excluded_models = [
+        model for model in models_to_run if model in STEERING_EXCLUDE_MODELS
+    ]
+
+    if excluded_models:
+        logger.warning(f"Models {excluded_models} are excluded from steering, skipping")
+
+    if not valid_models:
+        logger.warning("No valid models to run inference on, exiting")
         return
 
-    # Always use batch inference approach (batch_infer_hypernetwork parameter is deprecated)
-    logger.debug("Batch steering inference for all models")
+    # Create combined DataFrame for all concepts
+    logger.debug("Preparing combined DataFrame for batch inference")
     combined_dfs = []
     for concept_id in my_concept_ids:
         concept_df = data_per_concept[concept_id][0]
         combined_dfs.append(concept_df)
     combined_df = pd.concat(combined_dfs, ignore_index=True)
 
-    # Check if model supports batch inference
-    if model_name in HYPERNETWORK_MODELS or model_name == "PromptSteering":
-        # Use optimized batch inference for hypernetwork models
-        logger.warning(f"Loading {model_name} on {device} for batch inference.")
+    # Run inference for each model using full batch inference
+    for model_name in valid_models:
+        logger.info(f"Running batch inference for model: {model_name}")
 
-        model_config = args.model
-
-        benchmark_model = get_model(
-            model_name,
-            model=model_instance,
-            tokenizer=tokenizer,
-            low_rank_dimension=len(metadata),
-            device=device,
-            training_args=model_config,
-            concept_ids=my_concept_ids,
-        )
-        benchmark_model.load(
-            dump_dir=train_dir,
-            mode="steering",
-            metadata_path=Path(data_dir) / METADATA_FILE,
-        )
-        benchmark_model.to(device)
-        if hasattr(benchmark_model, "ax"):
-            benchmark_model.ax.eval()
-            benchmark_model.ax.to(torch.bfloat16)
-
-        # Process concept IDs in batches
-        batch_size = args.inference.latent_batch_size
-        all_results = {}
-
-        for i in range(0, len(my_concept_ids), batch_size):
-            batch_concept_ids = my_concept_ids[i : i + batch_size]
-
-            if hasattr(benchmark_model, "ax"):
-                benchmark_model.to(device)
-                benchmark_model.ax.eval()
-                benchmark_model.ax.to(torch.bfloat16)
-
-            # Get predictions for this batch
-            batch_df = combined_df[
-                combined_df["concept_id"].isin(batch_concept_ids)
-            ]
-
-            batch_results = benchmark_model.predict_steer(
-                batch_df,
-                batch_size=args.inference.steering_batch_size,
-                prefix_length=prefix_length,
-                dump_dir=Path(args.dataset.dump_dir) / infer_run,
-                concept_id=batch_concept_ids[0],  # Use first concept_id for batch
-                selected_layer=selected_layer_map,
-            )
-
-            # Merge results
-            for k, v in batch_results.items():
-                if k not in all_results:
-                    all_results[k] = []
-                all_results[k].extend(v)
-
-            gc.collect()
-            torch.cuda.empty_cache()
-
-        # Convert lists to final format
-        results = {k: all_results[k] for k in all_results}
-        # Store the results in combined_df
-        for k, v in results.items():
-            combined_df.loc[:, f"{model_name}_{k}"] = v
-        del benchmark_model
-        torch.cuda.empty_cache()
-    else:
-        # Use individual concept processing for non-hypernetwork models
-        logger.warning(f"Model {model_name} does not support optimized batch inference, using individual concept processing.")
-        
-        for concept_id in my_concept_ids:
-            current_df, sae_link, sae_id = data_per_concept[concept_id]
-            # Get the selected layer for this concept (if available)
-            selected_layer = None
-            if selected_layer_map is not None:
-                if isinstance(selected_layer_map, dict):
-                    # new format: {concept_id: layer}
-                    selected_layer = selected_layer_map.get(str(concept_id), None)
-                else:
-                    # old format: int
-                    selected_layer = selected_layer_map
+        # Both PromptSteering and Hypersteer models support full batch inference
+        if model_name in HYPERNETWORK_MODELS or model_name == "PromptSteering":
+            logger.info(f"Loading {model_name} on {device} for full batch inference.")
 
             model_config = args.model
 
@@ -539,122 +417,116 @@ def infer_steering(
                 model_name,
                 model=model_instance,
                 tokenizer=tokenizer,
-                training_args=model_config,
-                metadata=metadata,
-                low_rank_dimension=len(metadata),
+                low_rank_dimension=len(concept_info),
                 device=device,
+                training_args=model_config,
+                concept_ids=my_concept_ids,
             )
             benchmark_model.load(
                 dump_dir=train_dir,
-                sae_path=metadata[0]["ref"],
                 mode="steering",
-                metadata_path=Path(data_dir) / METADATA_FILE,
-                intervention_type=args.inference.steering_intervention_type,
-                concept_id=concept_id,
-                concept_ids=my_concept_ids,
             )
             benchmark_model.to(device)
-            if hasattr(benchmark_model, "ax") and args.inference.use_bf16:
+            if hasattr(benchmark_model, "ax"):
                 benchmark_model.ax.eval()
                 benchmark_model.ax.to(torch.bfloat16)
 
-            logger.warning(
-                f"Inference steering with {model_name} on {device} for concept {concept_id}."
+            # Run full batch inference on all concepts at once
+            logger.info(
+                f"Running full batch inference on {len(my_concept_ids)} concepts"
+            )
+            results = benchmark_model.predict_steer(
+                combined_df,
+                batch_size=args.inference.steering_batch_size,
+                prefix_length=prefix_length,
+                dump_dir=Path(args.dataset.dump_dir) / infer_run,
+                concept_id=my_concept_ids,  # Pass all concept IDs for batch processing
             )
 
-            # Run prediction
-            results = benchmark_model.predict_steer(
-                current_df,
-                concept_id=concept_id,
-                sae_link=sae_link,
-                sae_id=sae_id,
-                dump_dir=Path(args.dataset.dump_dir) / infer_run,
-                batch_size=args.inference.steering_batch_size,
-                eval_output_length=args.inference.steering_output_length,
-                temperature=args.inference.temperature,
-                prefix_length=prefix_length,
-                positions=model_config.intervention_positions
-                if model_name not in {"PromptSteering", "GemmaScopeSAE"}
-                else None,
-                use_synergy=getattr(model_config, 'use_synergy', False),
-                disable_neuronpedia_max_act=args.inference.disable_neuronpedia_max_act,
-                selected_layer=selected_layer,  # Per-concept selected_layer
-            )
-            # Store the results in current_df and update combined_df
+            # Store the results in combined_df
             for k, v in results.items():
-                current_df[f"{model_name}_{k}"] = v
-            
-            # Update the corresponding rows in combined_df
-            concept_mask = combined_df["concept_id"] == concept_id
-            for k, v in results.items():
-                combined_df.loc[concept_mask, f"{model_name}_{k}"] = v
-            
+                combined_df[f"{model_name}_{k}"] = v
+
             del benchmark_model
             torch.cuda.empty_cache()
+        else:
+            # Fallback for models that don't support batch inference (should be rare)
+            logger.warning(
+                f"Model {model_name} does not support batch inference, using individual concept processing."
+            )
 
-    # Save the combined results
-    save(dump_dir, "steering", combined_df, rank, subfolder=infer_run)
-    logger.warning(
-        f"Saved steering inference results for all concept ids to rank_{rank}_steering_data.parquet"
-    )
-    # After processing, save state
-    current_state = {"last_concept_id": my_concept_ids[-1]}
-    save_state(dump_dir, current_state, "steering", rank, subfolder=infer_run)
+            for concept_id in my_concept_ids:
+                current_df, sae_link, sae_id = data_per_concept[concept_id]
+                model_config = args.model
+
+                benchmark_model = get_model(
+                    model_name,
+                    model=model_instance,
+                    tokenizer=tokenizer,
+                    training_args=model_config,
+                    low_rank_dimension=len(concept_info),
+                    device=device,
+                )
+                benchmark_model.load(
+                    dump_dir=train_dir,
+                    sae_path=concept_info[0]["ref"],
+                    mode="steering",
+                    intervention_type=args.inference.steering_intervention_type,
+                    concept_id=concept_id,
+                    concept_ids=my_concept_ids,
+                )
+                benchmark_model.to(device)
+                if hasattr(benchmark_model, "ax") and args.inference.use_bf16:
+                    benchmark_model.ax.eval()
+                    benchmark_model.ax.to(torch.bfloat16)
+
+                logger.info(
+                    f"Inference steering with {model_name} on {device} for concept {concept_id}."
+                )
+
+                # Run prediction
+                results = benchmark_model.predict_steer(
+                    current_df,
+                    concept_id=concept_id,
+                    sae_link=sae_link,
+                    sae_id=sae_id,
+                    dump_dir=Path(args.dataset.dump_dir) / infer_run,
+                    batch_size=args.inference.steering_batch_size,
+                    eval_output_length=args.inference.steering_output_length,
+                    temperature=args.inference.temperature,
+                    prefix_length=prefix_length,
+                    positions=model_config.intervention_positions
+                    if model_name not in {"PromptSteering", "GemmaScopeSAE"}
+                    else None,
+                    use_synergy=getattr(model_config, "use_synergy", False),
+                    disable_neuronpedia_max_act=args.inference.disable_neuronpedia_max_act,
+                )
+                # Store the results in current_df and update combined_df
+                for k, v in results.items():
+                    current_df[f"{model_name}_{k}"] = v
+
+                # Update the corresponding rows in combined_df
+                concept_mask = combined_df["concept_id"] == concept_id
+                for k, v in results.items():
+                    combined_df.loc[concept_mask, f"{model_name}_{k}"] = v
+
+                del benchmark_model
+                torch.cuda.empty_cache()
+
+    # Save results only on rank 0 (assuming distributed inference will be implemented properly in the future)
+    if rank == 0:
+        combined_df = combined_df.sort_values(
+            by=["concept_id", "input_id", "factor"]
+        ).reset_index(drop=True)
+        combined_df.to_parquet(
+            Path(dump_dir) / infer_run / "steering_data.parquet", engine="pyarrow"
+        )
+        logger.info(
+            f"Saved steering inference results to {Path(dump_dir) / infer_run / 'steering_data.parquet'}"
+        )
 
     # Synchronize all processes
     barrier()
-
-    # Rank 0 merges results
-    if rank == 0:
-        logger.warning("Rank 0 is merging results.")
-        # Merge per-rank results
-        all_parquet_files = list(
-            (Path(dump_dir) / infer_run).glob("rank_*_steering_data.parquet")
-        )
-        # Parse filenames to extract rank
-        import re
-
-        pattern = re.compile(r"rank_(\d+)_steering_data\.parquet")
-
-        file_info_list = []
-        for parquet_file in all_parquet_files:
-            match = pattern.match(parquet_file.name)
-            if match:
-                rank_str = match.group(1)
-                rank_int = int(rank_str)
-                file_info_list.append({"rank": rank_int, "file": parquet_file})
-            else:
-                logger.warning(
-                    f"Filename {parquet_file.name} does not match the expected pattern."
-                )
-
-        # Sort the file_info_list by rank
-        file_info_list.sort(key=lambda x: x["rank"])
-
-        # Read and concatenate dataframes
-        dfs = []
-        for info in file_info_list:
-            df = pd.read_parquet(info["file"])
-            dfs.append(df)
-        if len(dfs) > 0:
-            combined_df = pd.concat(dfs, ignore_index=True)
-            # Optionally sort combined_df by 'concept_id' if needed
-            combined_df = combined_df.sort_values(
-                by=["concept_id", "input_id", "factor"]
-            ).reset_index(drop=True)
-            combined_df.to_parquet(
-                Path(dump_dir) / infer_run / "steering_data.parquet", engine="pyarrow"
-            )
-            logger.warning(
-                f"Saved combined steering inference results to {Path(dump_dir) / infer_run / 'steering_data.parquet'}"
-            )
-        else:
-            logger.warning("No results to merge.")
-
-        # Optionally, delete per-rank files
-        for info in file_info_list:
-            os.remove(info["file"])
-            logger.warning(f"Deleted {info['file']}")
 
 
 def select_steering_factors(
@@ -666,9 +538,8 @@ def select_steering_factors(
     logger.info("Starting steering factor selection with Optuna TPE optimizer")
     logger.info("=" * 80)
 
-    data_dir = Path(args.dataset.data_dir)
     dump_dir = Path(args.dataset.dump_dir)
-    metadata = load_metadata_flatten(data_dir)
+    concept_info = load_dataset_for_inference(args)
 
     # Make eval run dir
     if args.evaluate.run_distinct_evals:
@@ -678,7 +549,7 @@ def select_steering_factors(
     (dump_dir / eval_run).mkdir(parents=True, exist_ok=True)
 
     # Get list of all concept_ids
-    concept_ids = [metadata[i]["concept_id"] for i in range(len(metadata))]
+    concept_ids = [info["concept_id"] for info in concept_info]
 
     # Filter out concept ids if specified
     if args.dataset.select_concept_ids:
@@ -780,23 +651,37 @@ def select_steering_factors(
         for data in eval_results:
             data["results"]["LMJudgeEvaluator"] = combine_scores_per_concept(data)
 
-        # Extract the aggregated scores for all concepts and compute the mean
-        model_name = trial_args.inference.factor_selection.model
-        # Get the raw score (POSITIVE value, higher is better)
-        raw_score = 0.0
-        count = 0
-        for result in eval_results:
-            if (
-                model_name in result["results"]["LMJudgeEvaluator"]
-                and metric_name in result["results"]["LMJudgeEvaluator"][model_name]
-            ):
-                score_val = result["results"]["LMJudgeEvaluator"][model_name][
-                    metric_name
-                ][0]
-                raw_score += score_val
-                count += 1
+        # Determine which models to use for factor selection
+        factor_selection_models = []
+        if trial_args.inference.factor_selection.models:
+            factor_selection_models = trial_args.inference.factor_selection.models
+        else:
+            # Fall back to single model for backward compatibility
+            factor_selection_models = [trial_args.inference.factor_selection.model]
 
-        mean_score = raw_score / count if count > 0 else 0.0
+        # Extract the aggregated scores for all concepts and compute the mean across all models
+        total_score = 0.0
+        total_count = 0
+
+        for model_name in factor_selection_models:
+            model_score = 0.0
+            model_count = 0
+            for result in eval_results:
+                if (
+                    model_name in result["results"]["LMJudgeEvaluator"]
+                    and metric_name in result["results"]["LMJudgeEvaluator"][model_name]
+                ):
+                    score_val = result["results"]["LMJudgeEvaluator"][model_name][
+                        metric_name
+                    ][0]
+                    model_score += score_val
+                    model_count += 1
+
+            if model_count > 0:
+                total_score += model_score
+                total_count += model_count
+
+        mean_score = total_score / total_count if total_count > 0 else 0.0
 
         # Store all metrics to understand tradeoffs
         if capture_all_metrics:
@@ -1182,7 +1067,7 @@ def select_steering_factors(
     )
 
     if args.evaluate.report_to == "wandb":
-        log_results_to_wandb(dump_dir, eval_run=eval_run, infer_run=infer_run)
+        log_results_to_wandb(dump_dir, eval_run=eval_run, infer_run=infer_run, concept_info=concept_info)
 
     # Log hyperparameter optimization plots and tradeoff information
     if wandb.run and args.evaluate.report_to == "wandb":
@@ -1280,19 +1165,8 @@ def run_inference(args: ExperimentConfig):
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-    if args.dataset.overwrite_metadata_dir is not None and os.path.exists(
-        args.dataset.overwrite_metadata_dir
-    ):
-        args.dataset.data_dir = (
-            args.dataset.overwrite_metadata_dir
-        )  # since we only load metadata from this dir
-    elif args.dataset.eval_data_dir is not None:
-        args.dataset.eval_data_dir = Path(args.dataset.eval_data_dir) / "generate"
-        logger.debug("Using eval data dir: %s", args.dataset.eval_data_dir)
-        args.dataset.data_dir = args.dataset.eval_data_dir
-    elif args.dataset.data_dir is not None:
-        args.dataset.data_dir = Path(args.dataset.data_dir) / "generate"
-        logger.debug("Using data dir: %s", args.dataset.data_dir)
+    # Dataset loading is now handled directly through HuggingFace dataset configuration
+    # No need for separate metadata directory handling
 
     # Set up dump dir
     original_dump_dir = Path(args.dataset.dump_dir)
@@ -1345,29 +1219,16 @@ def run_inference(args: ExperimentConfig):
     # Set the device for this process
     device = get_and_set_device(local_rank)
 
-    # Setup file logging for inference
-    log_file = setup_file_logging(inference_dump_dir / "logs", rank)
-    logger.info(f"Logging to file: {log_file}")
+
 
     # Define common arguments for all inference functions
     _common_args = [args, rank, world_size, device, logger]
     _common_kwargs = {"infer_run": infer_run}
 
-    if args.inference.mode == "steering":
-        if args.inference.factor_selection.enable:
-            select_steering_factors(*_common_args, **_common_kwargs)
-        else:
-            infer_steering(*_common_args, **_common_kwargs)
-    elif args.inference.mode == "all":
-        # Since we removed latent inference, "all" now just means steering
-        if args.inference.factor_selection.enable:
-            select_steering_factors(*_common_args, **_common_kwargs)
-        else:
-            infer_steering(*_common_args, **_common_kwargs)
+    if args.inference.factor_selection.enable:
+        select_steering_factors(*_common_args, **_common_kwargs)
     else:
-        raise ValueError(
-            f"Unsupported inference mode: {args.inference.mode}. Only 'steering' and 'all' are supported."
-        )
+        infer_steering(*_common_args, **_common_kwargs)
 
     # Finalize the process group
     destroy_process_group()
@@ -1392,14 +1253,21 @@ def clear_global_model():
 
 @hydra.main(config_path="config", config_name="config", version_base=None)
 def main(cfg: DictConfig):
-    pretrained_cfg_path = Path(cfg.experiment.dataset.dump_dir) / "config.yaml"
-    if pretrained_cfg_path.exists():
-        pretrained_cfg = OmegaConf.load(pretrained_cfg_path)
-        cli_cfg = OmegaConf.create(OmegaConf.to_container(cfg.experiment, resolve=True))
-        merged_cfg = OmegaConf.merge(pretrained_cfg, cli_cfg)
-        cfg.experiment = merged_cfg
+    # Simple: just merge experiment overrides into the main config
+    if hasattr(cfg, 'experiment'):
+        merged_cfg = OmegaConf.merge(cfg, cfg.experiment)
+    else:
+        merged_cfg = cfg
+    
+    # Handle pretrained config merging if needed
+    if merged_cfg.dataset.dump_dir:
+        pretrained_cfg_path = Path(merged_cfg.dataset.dump_dir) / "config.yaml"
+        if pretrained_cfg_path.exists():
+            logger.info(f"Loading pretrained config from {pretrained_cfg_path}")
+            pretrained_cfg = OmegaConf.load(pretrained_cfg_path)
+            merged_cfg = OmegaConf.merge(pretrained_cfg, merged_cfg)
 
-    config = config_to_pydantic(cfg.experiment, ExperimentConfig)
+    config = config_to_pydantic(merged_cfg, ExperimentConfig)
     infer_run = run_inference(config)
     if config.inference.run_eval:
         run_eval(config, infer_run)

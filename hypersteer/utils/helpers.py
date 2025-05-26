@@ -153,30 +153,7 @@ def get_logger(name: str, level: Optional[str] = None) -> DistributedAwareLogger
     return logger
 
 
-def setup_file_logging(log_dir: Path, rank: Optional[int] = None):
-    """
-    Setup file logging for distributed training.
-    
-    Args:
-        log_dir: Directory to store log files
-        rank: Optional rank override (auto-detected if None)
-    """
-    if rank is None:
-        rank = get_rank()
-    
-    log_dir = Path(log_dir)
-    log_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Create file handler for this rank
-    log_file = log_dir / f"rank_{rank}.log"
-    file_handler = logging.FileHandler(log_file)
-    file_handler.setFormatter(DistributedFormatter(include_rank=False))  # Rank is in filename
-    
-    # Add to root logger
-    root_logger = logging.getLogger()
-    root_logger.addHandler(file_handler)
-    
-    return log_file
+
 
 
 def load_metadata(metadata_path):
