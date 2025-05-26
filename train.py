@@ -35,22 +35,19 @@ logger = get_logger(__name__)
 
 @hydra.main(config_path="config", config_name="config", version_base=None)
 def main(cfg: DictConfig):
-    # Simple: just merge experiment overrides into the main config
-    if hasattr(cfg, "experiment"):
-        merged_cfg = OmegaConf.merge(cfg, cfg.experiment)
-    else:
-        merged_cfg = cfg
+    # Use experiment config if it exists, otherwise use the main config
+    config = cfg.experiment if hasattr(cfg, "experiment") else cfg
 
     # Handle pretrained config merging if needed
-    if merged_cfg.dataset.dump_dir:
-        pretrained_cfg_path = Path(merged_cfg.dataset.dump_dir) / "config.yaml"
+    if config.dataset.dump_dir:
+        pretrained_cfg_path = Path(config.dataset.dump_dir) / "config.yaml"
         if pretrained_cfg_path.exists():
             logger.info(f"Loading pretrained config from {pretrained_cfg_path}")
             pretrained_cfg = OmegaConf.load(pretrained_cfg_path)
-            merged_cfg = OmegaConf.merge(pretrained_cfg, merged_cfg)
+            config = OmegaConf.merge(pretrained_cfg, config)
 
     # Convert to pydantic config
-    args = config_to_pydantic(merged_cfg, ExperimentConfig)
+    args = config_to_pydantic(config, ExperimentConfig)
 
     # Initialize the process group
     try:
@@ -77,7 +74,7 @@ def main(cfg: DictConfig):
 
     # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(
-        args.model.model_name,
+        args.model.target_model_name,
         model_max_length=512,
     )
     tokenizer.padding_side = "right"
@@ -86,7 +83,7 @@ def main(cfg: DictConfig):
     if args.train.use_bf16:
         logger.info(f"Using bfloat16 for model {args.model.model_name}")
     model_instance = AutoModelForCausalLM.from_pretrained(
-        args.model.model_name,
+        args.model.target_model_name,
         torch_dtype=torch.bfloat16 if args.train.use_bf16 else None,
     )
     model_instance = model_instance.eval()

@@ -2,87 +2,49 @@ import hashlib
 import json
 import logging
 import os
-import sys
 from os import PathLike
 from pathlib import Path
-from typing import Optional
 
 import torch
 import torch.distributed as dist
 
 
-class DistributedFormatter(logging.Formatter):
-    """Custom formatter that includes rank information and clean formatting."""
-    
-    def __init__(self, include_rank=True, include_world_size=True):
-        self.include_rank = include_rank
-        self.include_world_size = include_world_size
-        
-        # Base format without rank info
-        base_format = "%(asctime)s | %(levelname)-8s | %(name)s:%(lineno)d | %(message)s"
-        
-        super().__init__(
-            fmt=base_format,
-            datefmt="%Y-%m-%d %H:%M:%S"
-        )
-    
-    def format(self, record):
-        # Add rank information to the record if distributed training is active
-        if self.include_rank and dist.is_initialized():
-            rank = dist.get_rank()
-            world_size = dist.get_world_size() if self.include_world_size else None
-            
-            if world_size and world_size > 1:
-                rank_info = f"[Rank {rank}/{world_size}] "
-            else:
-                rank_info = f"[Rank {rank}] "
-            
-            # Prepend rank info to the message
-            record.msg = f"{rank_info}{record.msg}"
-        
-        return super().format(record)
-
-
 class DistributedAwareLogger(logging.Logger):
-    """Enhanced distributed-aware logger with better control and formatting."""
-    
+    """Enhanced distributed-aware logger that works with Hydra's colorlog."""
+
     def __init__(self, name):
         super().__init__(name)
         self.log_on_all_ranks = int(os.environ.get("LOG_ON_ALL_RANKS", 0)) == 1
-        self._setup_handlers()
-    
-    def _setup_handlers(self):
-        """Setup console handler with distributed formatter."""
-        # Remove any existing handlers to avoid duplicates
-        for handler in self.handlers[:]:
-            self.removeHandler(handler)
-        
-        # Create console handler
-        console_handler = logging.StreamHandler(sys.stdout)
-        console_handler.setFormatter(DistributedFormatter())
-        
-        # Set handler level
-        handler_level = os.environ.get("LOG_LEVEL", "INFO").upper()
-        console_handler.setLevel(getattr(logging, handler_level))
-        
-        self.addHandler(console_handler)
-        
-        # Prevent propagation to avoid duplicate logs
-        self.propagate = False
-    
+
     def _should_log(self):
         """Determine if this rank should log."""
         if not dist.is_initialized():
             return True
-        
+
         rank = dist.get_rank()
         return rank == 0 or self.log_on_all_ranks
-    
+
+    def _add_rank_info(self, msg):
+        """Add rank information to log message if distributed training is active."""
+        if dist.is_initialized():
+            rank = dist.get_rank()
+            world_size = dist.get_world_size()
+
+            if world_size > 1:
+                rank_info = f"[Rank {rank}/{world_size}] "
+            else:
+                rank_info = f"[Rank {rank}] "
+
+            return f"{rank_info}{msg}"
+        return msg
+
     def _log(self, level, msg, args, exc_info=None, extra=None, stack_info=False):
         """Override _log to implement distributed-aware logging."""
         if self._should_log():
+            # Add rank information to the message
+            msg = self._add_rank_info(msg)
             super()._log(level, msg, args, exc_info, extra, stack_info)
-    
+
     def debug_all_ranks(self, msg, *args, **kwargs):
         """Force debug logging on all ranks regardless of settings."""
         if dist.is_initialized():
@@ -92,7 +54,7 @@ class DistributedAwareLogger(logging.Logger):
             self.log_on_all_ranks = original_setting
         else:
             self.debug(msg, *args, **kwargs)
-    
+
     def info_all_ranks(self, msg, *args, **kwargs):
         """Force info logging on all ranks regardless of settings."""
         if dist.is_initialized():
@@ -102,7 +64,7 @@ class DistributedAwareLogger(logging.Logger):
             self.log_on_all_ranks = original_setting
         else:
             self.info(msg, *args, **kwargs)
-    
+
     def warning_all_ranks(self, msg, *args, **kwargs):
         """Force warning logging on all ranks regardless of settings."""
         if dist.is_initialized():
@@ -112,7 +74,7 @@ class DistributedAwareLogger(logging.Logger):
             self.log_on_all_ranks = original_setting
         else:
             self.warning(msg, *args, **kwargs)
-    
+
     def error_all_ranks(self, msg, *args, **kwargs):
         """Force error logging on all ranks regardless of settings."""
         if dist.is_initialized():
@@ -127,33 +89,24 @@ class DistributedAwareLogger(logging.Logger):
 # Set the custom logger class as default
 logging.setLoggerClass(DistributedAwareLogger)
 
-# Configure root logger
-root_logger = logging.getLogger()
-root_logger.setLevel(os.environ.get("LOG_LEVEL", "INFO").upper())
 
-
-def get_logger(name: str, level: Optional[str] = None) -> DistributedAwareLogger:
+def get_logger(name: str, level: str | None = None) -> DistributedAwareLogger:
     """
-    Get a distributed-aware logger with proper formatting.
-    
+    Get a distributed-aware logger that works with Hydra's colorlog.
+
     Args:
         name: Logger name (typically __name__)
         level: Optional log level override
-    
+
     Returns:
         DistributedAwareLogger instance
     """
     logger = logging.getLogger(name)
-    
+
     if level:
         logger.setLevel(getattr(logging, level.upper()))
-    else:
-        logger.setLevel(os.environ.get("LOG_LEVEL", "INFO").upper())
-    
+
     return logger
-
-
-
 
 
 def load_metadata(metadata_path):

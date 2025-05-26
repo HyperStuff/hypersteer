@@ -112,7 +112,7 @@ def load_dataset_for_inference(args):
     Load HuggingFace dataset for inference and extract concept information.
     """
     from hypersteer.data import get_training_dataset
-    
+
     # Load the dataset using the same function as training
     dataset = get_training_dataset(
         dataset_type="axbench",
@@ -123,23 +123,27 @@ def load_dataset_for_inference(args):
         select_concept_ids=args.dataset.select_concept_ids,
         max_concepts=args.dataset.max_concepts,
     )
-    
+
     # Extract unique concept information from the dataset
     df = dataset.to_pandas()
     concept_info = []
-    
+
     # Get unique concepts with their IDs
-    unique_concepts = df.groupby('concept_id').first()
-    
+    unique_concepts = df.groupby("concept_id").first()
+
     for concept_id, row in unique_concepts.iterrows():
         if concept_id >= 0:  # Skip negative concept IDs
-            concept_info.append({
-                "concept_id": concept_id,
-                "concept": row.get("input_concept", f"concept_{concept_id}"),
-                "ref": f"https://neuronpedia.org/api/feature/{concept_id}",  # Default SAE link format
-                "concept_genres_map": {row.get("input_concept", f"concept_{concept_id}"): ["text"]},
-            })
-    
+            concept_info.append(
+                {
+                    "concept_id": concept_id,
+                    "concept": row.get("input_concept", f"concept_{concept_id}"),
+                    "ref": f"https://neuronpedia.org/api/feature/{concept_id}",  # Default SAE link format
+                    "concept_genres_map": {
+                        row.get("input_concept", f"concept_{concept_id}"): ["text"]
+                    },
+                }
+            )
+
     return concept_info
 
 
@@ -153,10 +157,12 @@ def create_data_steering(
     args: InferenceConfig,
 ):
     # Find concept info for this concept_id
-    concept_data = next((c for c in concept_info if c["concept_id"] == concept_id), None)
+    concept_data = next(
+        (c for c in concept_info if c["concept_id"] == concept_id), None
+    )
     if concept_data is None:
         raise ValueError(f"Concept ID {concept_id} not found in dataset")
-    
+
     concept = concept_data["concept"]
     sae_link = concept_data["ref"]
     sae_id = int(sae_link.split("/")[-1])
@@ -317,7 +323,9 @@ def infer_steering(
 
     cache_dir = Path(args.dataset.cache_dir or "assets/data/axbench/cache")
     cache_dir.mkdir(parents=True, exist_ok=True)
-    cache_key = get_cache_key(args.inference, my_concept_ids, concept_info, is_latent=False)
+    cache_key = get_cache_key(
+        args.inference, my_concept_ids, concept_info, is_latent=False
+    )
     cache_file = os.path.join(cache_dir, f"steering_data_cache_{cache_key}.parquet")
 
     # Try to load from cache first
@@ -1067,7 +1075,9 @@ def select_steering_factors(
     )
 
     if args.evaluate.report_to == "wandb":
-        log_results_to_wandb(dump_dir, eval_run=eval_run, infer_run=infer_run, concept_info=concept_info)
+        log_results_to_wandb(
+            dump_dir, eval_run=eval_run, infer_run=infer_run, concept_info=concept_info
+        )
 
     # Log hyperparameter optimization plots and tradeoff information
     if wandb.run and args.evaluate.report_to == "wandb":
@@ -1219,8 +1229,6 @@ def run_inference(args: ExperimentConfig):
     # Set the device for this process
     device = get_and_set_device(local_rank)
 
-
-
     # Define common arguments for all inference functions
     _common_args = [args, rank, world_size, device, logger]
     _common_kwargs = {"infer_run": infer_run}
@@ -1253,21 +1261,18 @@ def clear_global_model():
 
 @hydra.main(config_path="config", config_name="config", version_base=None)
 def main(cfg: DictConfig):
-    # Simple: just merge experiment overrides into the main config
-    if hasattr(cfg, 'experiment'):
-        merged_cfg = OmegaConf.merge(cfg, cfg.experiment)
-    else:
-        merged_cfg = cfg
-    
+    # Use experiment config if it exists, otherwise use the main config
+    config = cfg.experiment if hasattr(cfg, "experiment") else cfg
+
     # Handle pretrained config merging if needed
-    if merged_cfg.dataset.dump_dir:
-        pretrained_cfg_path = Path(merged_cfg.dataset.dump_dir) / "config.yaml"
+    if hasattr(config, "dataset") and config.dataset.dump_dir:
+        pretrained_cfg_path = Path(config.dataset.dump_dir) / "config.yaml"
         if pretrained_cfg_path.exists():
             logger.info(f"Loading pretrained config from {pretrained_cfg_path}")
             pretrained_cfg = OmegaConf.load(pretrained_cfg_path)
-            merged_cfg = OmegaConf.merge(pretrained_cfg, merged_cfg)
+            config = OmegaConf.merge(pretrained_cfg, config)
 
-    config = config_to_pydantic(merged_cfg, ExperimentConfig)
+    config = config_to_pydantic(config, ExperimentConfig)
     infer_run = run_inference(config)
     if config.inference.run_eval:
         run_eval(config, infer_run)

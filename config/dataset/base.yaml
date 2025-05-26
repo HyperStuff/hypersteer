@@ -1,11 +1,6 @@
 defaults:
   - _self_
 
-data_dir: null
-eval_data_dir: null
-train_dir: "train"
-overwrite_metadata_dir: null
-overwrite_inference_data_dir: null
 dataset_name: null
 dataset_category: "instruction"
 dataset_split: "train"

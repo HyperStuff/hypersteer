@@ -2,8 +2,6 @@ defaults:
   - base
 
 # AxBench-specific overrides
-data_dir: "data/axbench/concept10/prod_2b_l20_v1"
-eval_data_dir: "data/axbench/concept10-heldout-prod"
 dataset_category: "instruction"
 max_concepts: 100
 num_of_examples: -1

@@ -1,8 +1,13 @@
+# PyTorch is now automatically selected based on platform:
+# - CPU builds on macOS/Windows
+# - CUDA builds on Linux
+# 
+# For manual control, you can still use: UV_TORCH_BACKEND=auto uv sync
+
 [project]
 name = "hypersteer"
 version = "0.1.0"
 description = "Steering models with hypernetworks."
-readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "einops>=0.8.0",
@@ -27,7 +32,9 @@ dependencies = [
     "pyvene>=0.1.0",
     "transformers==4.45.1",
     "adjusttext>=1.0.0",
-    "optuna==4.3.0"
+    "optuna==4.3.0",
+    "torch>=2.7.0",
+    "torchvision>=0.22.0",
 ]
 
 [project.optional-dependencies]
@@ -37,18 +44,7 @@ dev = [
     "pre-commit>=3.0.0",
     "ai_commit @ git+https://github.com/sidnb13/ai_commit",
 ]
-cpu = [
-    "torch>=2.0.0",
-    "torchvision>=0.15.0",
-]
-cu128 = [
-    "torch>=2.0.0",
-    "torchvision>=0.15.0",
-]
-cu128-nightly = [
-    "torch>=2.0.0",
-    "torchvision>=0.15.0",
-]
+
 reft = [
     "pyreft>=0.0.1",
 ]
@@ -66,25 +62,17 @@ build-backend = "hatchling.build"
 [tool.hatch.metadata]
 allow-direct-references = true
 
-[tool.uv]
-conflicts = [
-    [
-        { extra = "cpu" },
-        { extra = "cu128" },
-        { extra = "cu128-nightly" },
-    ],
-]
+[tool.hatch.build.targets.wheel]
+packages = ["hypersteer"]
 
 [tool.uv.sources]
 torch = [
-    { index = "pytorch-cpu", marker = "extra == 'cpu'" },
-    { index = "pytorch-cu128", marker = "extra == 'cu128' and extra != 'cpu'" },
-    { index = "pytorch-cu128-nightly", marker = "extra == 'cu128-nightly' and extra != 'cpu' and extra != 'cu128'" },
+    { index = "pytorch-cpu", marker = "sys_platform != 'linux'" },
+    { index = "pytorch-cu128", marker = "sys_platform == 'linux'" },
 ]
 torchvision = [
-    { index = "pytorch-cpu", marker = "extra == 'cpu'" },
-    { index = "pytorch-cu128", marker = "extra == 'cu128' and extra != 'cpu'" },
-    { index = "pytorch-cu128-nightly", marker = "extra == 'cu128-nightly' and extra != 'cpu' and extra != 'cu128'" },
+    { index = "pytorch-cpu", marker = "sys_platform != 'linux'" },
+    { index = "pytorch-cu128", marker = "sys_platform == 'linux'" },
 ]
 
 [[tool.uv.index]]
@@ -95,9 +83,4 @@ explicit = true
 [[tool.uv.index]]
 name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"
-explicit = true
-
-[[tool.uv.index]]
-name = "pytorch-cu128-nightly"
-url = "https://download.pytorch.org/whl/nightly/cu128"
 explicit = true

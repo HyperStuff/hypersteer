@@ -1,5 +1,6 @@
+# @package _global_
 # Base experiment - minimal overrides for basic functionality
-# This is the default experiment that gets loaded when experiment: base
+# This merges at root level when specified
 
 # Training overrides
 train:
@@ -38,8 +39,6 @@ evaluate:
 
 # Dataset overrides
 dataset:
-  data_dir: data/axbench/concept10/prod_2b_l20_v1
-  eval_data_dir: data/axbench/concept10-heldout-prod
   max_concepts: 100
   num_of_examples: -1
   cache_dir: assets/cache

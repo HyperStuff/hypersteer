@@ -9,7 +9,7 @@ defaults:
   - generate: base
   - wandb: base
   - launcher: base  # Default to base launcher, can be overridden
-  - experiment: base # Load experiment overrides last
+  - experiment: null  # This will merge at root level when specified
   - override hydra/job_logging: colorlog
   - override hydra/hydra_logging: colorlog
 
@@ -19,3 +19,6 @@ hydra:
     env_set:
       OPENAI_DRY_RUN: 0
       TOKENIZERS_PARALLELISM: false
+
+# Allow config overrides
+_target_: omegaconf.DictConfig

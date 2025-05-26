@@ -23,15 +23,12 @@ from hypersteer.templates.html_templates import (
 from hypersteer.utils.configs import ExperimentConfig, config_to_pydantic
 from hypersteer.utils.constants import (
     EVAL_STATE_FILE,
-    LATENT_EXCLUDE_MODELS,
     STEERING_EXCLUDE_MODELS,
 )
 from hypersteer.utils.dry_run import patch_client
 from hypersteer.utils.helpers import dump_json, get_logger
 from hypersteer.utils.language_models import LanguageModel
 from hypersteer.utils.plot_utils import (
-    plot_accuracy_bars,
-    plot_aggregated_roc,
     plot_metrics,
     plot_win_rates,
 )
@@ -668,13 +665,18 @@ def log_results_to_wandb(
             config_path = Path(dump_dir) / "config.yaml"
             if config_path.exists():
                 from omegaconf import OmegaConf
-                from hypersteer.utils.configs import config_to_pydantic, ExperimentConfig
-                
+
+                from hypersteer.utils.configs import (
+                    ExperimentConfig,
+                    config_to_pydantic,
+                )
+
                 cfg = OmegaConf.load(config_path)
                 args = config_to_pydantic(cfg, ExperimentConfig)
-                
+
                 # Load concept info from dataset
                 from inference import load_dataset_for_inference
+
                 concept_info = load_dataset_for_inference(args)
         except Exception as e:
             logger.warning(f"Could not load concept info from dataset: {e}")
@@ -905,11 +907,12 @@ def run_eval(args: ExperimentConfig, infer_run="inference"):
         # Load concept info for wandb logging
         try:
             from inference import load_dataset_for_inference
+
             concept_info = load_dataset_for_inference(args)
         except Exception as e:
             logger.warning(f"Could not load concept info for wandb logging: {e}")
             concept_info = None
-            
+
         log_results_to_wandb(
             dump_dir=args.dataset.dump_dir,
             eval_run=eval_run,
@@ -921,21 +924,18 @@ def run_eval(args: ExperimentConfig, infer_run="inference"):
 
 @hydra.main(config_path="config", config_name="config", version_base=None)
 def main(cfg: DictConfig):
-    # Simple: just merge experiment overrides into the main config
-    if hasattr(cfg, 'experiment'):
-        merged_cfg = OmegaConf.merge(cfg, cfg.experiment)
-    else:
-        merged_cfg = cfg
-    
+    # Use experiment config if it exists, otherwise use the main config
+    config = cfg.experiment if hasattr(cfg, "experiment") else cfg
+
     # Handle pretrained config merging if needed
-    if merged_cfg.dataset.dump_dir:
-        pretrained_cfg_path = Path(merged_cfg.dataset.dump_dir) / "config.yaml"
+    if hasattr(config, "dataset") and config.dataset.dump_dir:
+        pretrained_cfg_path = Path(config.dataset.dump_dir) / "config.yaml"
         if pretrained_cfg_path.exists():
             logger.info(f"Loading pretrained config from {pretrained_cfg_path}")
             pretrained_cfg = OmegaConf.load(pretrained_cfg_path)
-            merged_cfg = OmegaConf.merge(pretrained_cfg, merged_cfg)
+            config = OmegaConf.merge(pretrained_cfg, config)
 
-    config = config_to_pydantic(merged_cfg, ExperimentConfig)
+    config = config_to_pydantic(config, ExperimentConfig)
     run_eval(config, infer_run=config.evaluate.infer_run or "inference")
 
 

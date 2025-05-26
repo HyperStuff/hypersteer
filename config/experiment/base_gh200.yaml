@@ -1,4 +1,6 @@
+# @package _global_
 # GH200 optimized experiment - inherits from base with GPU-specific optimizations
+
 defaults:
   - base
   - _self_

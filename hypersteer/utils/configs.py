@@ -20,40 +20,48 @@ def config_to_pydantic(cfg: DictConfig, model_class: type[T]) -> T:
     return model_class(**config_dict)
 
 
-def load_experiment_config(experiment_name: str, config_path: str = "config") -> DictConfig:
+def load_experiment_config(
+    experiment_name: str, config_path: str = "config"
+) -> DictConfig:
     """
     Load and merge experiment configuration manually.
-    
+
     Args:
         experiment_name: Name of the experiment (e.g., 'base', 'hypersteer')
         config_path: Path to the config directory
-        
+
     Returns:
         Merged DictConfig with base defaults + experiment overrides
     """
     config_path = Path(config_path)
-    
+
     # Load base defaults
     base_defaults_path = config_path / "base_defaults.yaml"
     if not base_defaults_path.exists():
-        raise FileNotFoundError(f"Base defaults config not found at {base_defaults_path}")
-    
+        raise FileNotFoundError(
+            f"Base defaults config not found at {base_defaults_path}"
+        )
+
     base_config = OmegaConf.load(base_defaults_path)
     logger.info(f"Loaded base defaults from {base_defaults_path}")
-    
+
     # Load experiment overrides
     experiment_path = config_path / "experiment" / f"{experiment_name}.yaml"
     if not experiment_path.exists():
-        logger.warning(f"Experiment config not found at {experiment_path}, using base defaults only")
+        logger.warning(
+            f"Experiment config not found at {experiment_path}, using base defaults only"
+        )
         return base_config
-    
+
     experiment_config = OmegaConf.load(experiment_path)
     logger.info(f"Loaded experiment overrides from {experiment_path}")
-    
+
     # Merge configs (experiment overrides base)
     merged_config = OmegaConf.merge(base_config, experiment_config)
-    logger.info(f"Successfully merged experiment '{experiment_name}' with base defaults")
-    
+    logger.info(
+        f"Successfully merged experiment '{experiment_name}' with base defaults"
+    )
+
     return merged_config
 
 
@@ -78,11 +86,6 @@ class WandbConfig(BaseConfigModel):
 class DatasetConfig(BaseConfigModel):
     """Dataset arguments"""
 
-    data_dir: str | Path | None = None
-    eval_data_dir: str | Path | None = None
-    train_dir: str | Path = "train"
-    overwrite_metadata_dir: str | Path | None = None
-    overwrite_inference_data_dir: str | Path | None = None
     dataset_name: str | None = None
     dataset_category: str = "instruction"
     dataset_split: str = "train"
@@ -131,7 +134,9 @@ class FactorSelectionConfig(BaseConfigModel):
     factor_max: float = 3.0
     metric: str = "lm_judge_rating"  # Which metric to optimize
     model: str = "HyperSteer"
-    models: list[str] = Field(default_factory=list)  # Multiple models for factor selection
+    models: list[str] = Field(
+        default_factory=list
+    )  # Multiple models for factor selection
     # New parameters for Optuna
     discrete_space: bool = False  # Whether to use discrete values
     discrete_steps: int = 10  # Number of steps for discrete space
@@ -152,9 +157,10 @@ class ModelConfig(BaseConfigModel):
     """Configuration for model architecture and model-specific parameters."""
 
     # Core model parameters
-    model_name: str = "google/gemma-2-2b-it"
+    model_name: str = "HyperSteer"
+    target_model_name: str = "google/gemma-2-2b-it"
     base_model_name: str = "google/gemma-2-2b"
-    
+
     # Architecture parameters
     layer: int = 20
     steering_layers: list[int] | str | None = None
@@ -163,13 +169,13 @@ class ModelConfig(BaseConfigModel):
     cross_attn_hidden_layers: int = 8
     low_rank_dimension: int = 1
     topk: int = 8
-    
+
     # Model behavior parameters
     intervention_positions: str = "all"
     intervention_type: str = "addition"
     exclude_bos: bool = True
     special_tokens: list[str] = Field(default_factory=lambda: [])
-    
+
     # Model-specific features
     use_synergy: bool = False
     sparse_embedding: bool = False
@@ -178,7 +184,7 @@ class ModelConfig(BaseConfigModel):
     include_sentence_in_embedding: bool = False
     do_reconstruction: bool = False
     reconstruction_dict_path: str | Path | None = None
-    
+
     # Visualization configs (model-specific)
     logit_diff_visualization: VisualizationConfig = Field(
         default_factory=VisualizationConfig
@@ -200,7 +206,7 @@ class TrainingArgs(BaseConfigModel):
     n_steps: int = -1
     val_interval: int = 100
     checkpoint_per_step: int | None = None
-    
+
     # Optimization parameters
     lr: float = 0.01
     warmup_steps: int = 0
@@ -208,18 +214,18 @@ class TrainingArgs(BaseConfigModel):
     optimizer: str = "adamw"
     max_grad_norm: float = 100.0
     adaptive_row_lr: bool = False
-    
+
     # Loss configuration
     coeff_latent_l1_loss: float = 0.005
     reconstruction_loss_ratio: float = 0.0
     steering_loss_ratio: float = 1.0
     selection_l1_loss_coeff: float = 1e-3
-    
+
     # Data configuration
     binarize_dataset: bool = False
     train_on_negative: bool = True
     negative_example_ratio: float = 1.0
-    
+
     # Training environment
     debug: bool = False
     debug_model: bool = False
@@ -250,7 +256,9 @@ class InferenceConfig(BaseConfigModel):
     use_bf16: bool = True
     mode: str = "all"
     model_name: str = "google/gemma-2-2b-it"
-    models: list[str] = Field(default_factory=list)  # Multiple models to run inference on
+    models: list[str] = Field(
+        default_factory=list
+    )  # Multiple models to run inference on
     # DEPRECATED: batch_infer_hypernetwork is no longer used - batch inference is always enabled
     batch_infer_hypernetwork: bool = True
 

@@ -1,5 +1,9 @@
+# @package _global_
 # HyperSteer experiment - only overrides what's different from base
-# This demonstrates how to create a simple experiment with minimal overrides
+
+defaults:
+  - base  # Inherit from base experiment
+  - _self_
 
 model:
   use_selection_head: true
@@ -9,3 +13,6 @@ model:
     log_heatmap_freq: 5  # More frequent logging
     pdf_visualization: true
     png_visualization: true 
+
+wandb:
+  project: "hypersteer"

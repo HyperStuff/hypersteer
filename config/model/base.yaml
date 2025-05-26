@@ -1,7 +1,9 @@
 defaults:
   - _self_
+
 # Core model parameters
-model_name: "google/gemma-2-2b-it"
+model_name: HyperSteer
+target_model_name: "google/gemma-2-2b-it"
 base_model_name: "google/gemma-2-2b"
 
 # Architecture parameters
