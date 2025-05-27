@@ -1,6 +1,6 @@
 import itertools
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional
+from typing import Any
 
 import torch
 import torch.nn.utils
@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from transformers import get_scheduler
 
-from hypersteer.utils.configs import TrainingArgs, WandbConfig, ModelConfig
+from hypersteer.utils.configs import ModelConfig, TrainingArgs, WandbConfig
 from hypersteer.utils.helpers import get_logger, get_rank, get_world_size
 
 logger = get_logger(__name__)
@@ -19,7 +19,9 @@ class TrainerMixin(ABC):
     """Abstract mixin that defines the interface for trainable models."""
 
     @abstractmethod
-    def setup_model(self, training_args: TrainingArgs, model_config: ModelConfig, **kwargs) -> None:
+    def setup_model(
+        self, training_args: TrainingArgs, model_config: ModelConfig, **kwargs
+    ) -> None:
         """Setup the model for training."""
         pass
 
@@ -29,7 +31,7 @@ class TrainerMixin(ABC):
         pass
 
     @abstractmethod
-    def train_step(self, batch: Dict[str, Any], global_step: int) -> Dict[str, Any]:
+    def train_step(self, batch: dict[str, Any], global_step: int) -> dict[str, Any]:
         """
         Perform a single training step.
 
@@ -43,7 +45,7 @@ class TrainerMixin(ABC):
         pass
 
     @abstractmethod
-    def val_step(self, batch: Dict[str, Any], global_step: int) -> Dict[str, Any]:
+    def val_step(self, batch: dict[str, Any], global_step: int) -> dict[str, Any]:
         """
         Perform a single validation step.
 
@@ -57,7 +59,7 @@ class TrainerMixin(ABC):
         pass
 
     @abstractmethod
-    def log_metrics(self, metrics: Dict[str, Any], mode: str = "train") -> None:
+    def log_metrics(self, metrics: dict[str, Any], mode: str = "train") -> None:
         """Log metrics to wandb and logger."""
         pass
 
@@ -91,7 +93,7 @@ class Trainer:
         model: TrainerMixin,
         training_args: TrainingArgs,
         model_config: ModelConfig,
-        wandb_config: Optional[WandbConfig] = None,
+        wandb_config: WandbConfig | None = None,
         device=None,
         seed=42,
     ):
@@ -116,7 +118,7 @@ class Trainer:
         self.is_distributed = self.world_size > 1
 
     def setup_training(
-        self, train_dataloader: DataLoader, dev_dataloader: Optional[DataLoader] = None
+        self, train_dataloader: DataLoader, dev_dataloader: DataLoader | None = None
     ):
         """Setup training components."""
         # Setup model
@@ -175,8 +177,8 @@ class Trainer:
     def train(
         self,
         train_dataloader: DataLoader,
-        dev_dataloader: Optional[DataLoader] = None,
-        train_sampler: Optional[DistributedSampler] = None,
+        dev_dataloader: DataLoader | None = None,
+        train_sampler: DistributedSampler | None = None,
     ):
         """Main training loop."""
         num_training_steps, effective_epochs = self.setup_training(

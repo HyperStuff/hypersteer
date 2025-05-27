@@ -215,6 +215,68 @@ def prepare_df(current_df, tokenizer, is_chat_model, model_name):
     return current_df
 
 
+def run_steering_inference(model, examples, **kwargs):
+    """
+    Generic inference function that works with any model's predict_step method.
+
+    Args:
+        model: The model instance with a predict_step method
+        examples: DataFrame with examples to process
+        **kwargs: Additional arguments passed to predict_step
+
+    Returns:
+        Dictionary with aggregated results from all batches
+    """
+    import gc
+
+    from tqdm import tqdm
+
+    # Setup
+    model.tokenizer.padding_side = "left"
+    batch_size = kwargs.get("batch_size", 64)
+
+    # Initialize result containers
+    all_generations = []
+    all_perplexities = []
+    all_strengths = []
+    all_steering_vectors = []
+
+    total_batches = (len(examples) + batch_size - 1) // batch_size
+
+    with torch.inference_mode():
+        for batch_idx, i in enumerate(
+            tqdm(
+                range(0, len(examples), batch_size),
+                desc="Generating steered text",
+                total=total_batches,
+            )
+        ):
+            batch_examples = examples.iloc[i : i + batch_size]
+
+            # Call model-specific predict_step
+            batch_results = model.predict_step(
+                batch_examples, batch_idx=batch_idx, **kwargs
+            )
+
+            # Aggregate results
+            all_generations.extend(batch_results.get("generations", []))
+            all_perplexities.extend(batch_results.get("perplexities", []))
+            all_strengths.extend(batch_results.get("strengths", []))
+            all_steering_vectors.extend(batch_results.get("steering_vectors", []))
+
+            # Memory cleanup
+            del batch_examples, batch_results
+            gc.collect()
+            torch.cuda.empty_cache()
+
+    return {
+        "steered_generation": all_generations,
+        "perplexity": all_perplexities,
+        "strength": all_strengths,
+        "steering_vector": all_steering_vectors,
+    }
+
+
 def infer_steering(
     args: ExperimentConfig,
     rank,
@@ -443,12 +505,17 @@ def infer_steering(
             logger.info(
                 f"Running full batch inference on {len(my_concept_ids)} concepts"
             )
-            results = benchmark_model.predict_steer(
+            results = run_steering_inference(
+                benchmark_model,
                 combined_df,
                 batch_size=args.inference.steering_batch_size,
                 prefix_length=prefix_length,
                 dump_dir=Path(args.dataset.dump_dir) / infer_run,
                 concept_id=my_concept_ids,  # Pass all concept IDs for batch processing
+                eval_output_length=args.inference.steering_output_length,
+                temperature=args.inference.temperature,
+                use_synergy=getattr(model_config, "use_synergy", False),
+                disable_neuronpedia_max_act=args.inference.disable_neuronpedia_max_act,
             )
 
             # Store the results in combined_df
@@ -493,7 +560,8 @@ def infer_steering(
                 )
 
                 # Run prediction
-                results = benchmark_model.predict_steer(
+                results = run_steering_inference(
+                    benchmark_model,
                     current_df,
                     concept_id=concept_id,
                     sae_link=sae_link,

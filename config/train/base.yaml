@@ -11,28 +11,21 @@ val_interval: 100
 checkpoint_per_step: null
 
 # Optimization parameters
-lr: 0.01
+lr: 8e-5
 warmup_steps: 0
 weight_decay: 0.0
 optimizer: "adamw"
-max_grad_norm: 100.0
-adaptive_row_lr: false
-
-# Loss configuration
-coeff_latent_l1_loss: 0.005
-reconstruction_loss_ratio: 0.0
-steering_loss_ratio: 1.0
-selection_l1_loss_coeff: 0.001
+max_grad_norm: 1.0
 
 # Data configuration
 binarize_dataset: false
-train_on_negative: true
+train_on_negative: false
 negative_example_ratio: 1.0
 
 # Training environment
 debug: false
 debug_model: false
-save_dir: "./saved_models"
+save_dir: "assets/checkpoints"
 resume_from: null
 seed: 42
 use_bf16: true

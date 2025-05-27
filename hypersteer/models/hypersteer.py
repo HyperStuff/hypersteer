@@ -1,5 +1,4 @@
 import gc
-import json
 import os
 import random
 
@@ -13,10 +12,8 @@ import torch.nn.functional as F
 import torch.nn.utils
 import wandb
 from pyvene import IntervenableConfig, IntervenableModel
-from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
-from tqdm import tqdm
 from transformers import (
     AutoConfig,
     AutoModelForCausalLM,
@@ -25,12 +22,12 @@ from transformers import (
 
 from hypersteer.data.utils import get_batch_locs, make_data_module
 from hypersteer.training import TrainerMixin
+from hypersteer.utils.debug_utils import debug_print
 from hypersteer.utils.helpers import (
     configure_tokenizer_model,
     get_logger,
-    get_rank,
-    load_metadata,
 )
+from hypersteer.utils.model_utils import calculate_perplexity
 from hypersteer.utils.patch import monkeypatch_ax_model_generate
 from hypersteer.utils.visualization import Visualizer
 
@@ -41,30 +38,6 @@ from .interventions import HyperAdditiveIntervention
 from .model import Model
 
 logger = get_logger(__name__)
-
-
-def load_concept_id_to_desecription(metadata_path):
-    concept_id_to_description = {}
-    with open(metadata_path) as f:
-        for line in f:
-            data = json.loads(line)
-            concept_id, description = data["concept_id"], data["concept"]
-            concept_id_to_description[concept_id] = description
-    return concept_id_to_description
-
-
-def partition_df(df, n):
-    total_rows = len(df)
-    partition_size = total_rows // n
-    remainder = total_rows % n
-    partitions = []
-    start_idx = 0
-    for i in range(n):
-        current_size = partition_size + (1 if i < remainder else 0)
-        end_idx = start_idx + current_size
-        partitions.append(df.iloc[start_idx:end_idx].copy())
-        start_idx = end_idx
-    return partitions
 
 
 class RegressionWrapper(nn.Module):
@@ -169,29 +142,17 @@ class HyperSteer(Model, TrainerMixin):
         self.concept_embedding = self.concept_embedding.to(
             self.device, dtype=torch.bfloat16
         )
-        if self.model_config.do_reconstruction:
-            metadata_path = os.path.join(
-                self.model_config.reconstruction_dict_path, "metadata.jsonl"
-            )
-            self.concept_id_to_text = load_concept_id_to_desecription(metadata_path)
-        meta_data = kwargs.get("metadata", None)
-        if meta_data is not None:
-            self.concept_id_to_text = {}
-            for d in meta_data:
-                self.concept_id_to_text[d["concept_id"]] = d["concept"]
+        # Initialize empty concept mapping - will be populated from dataset
+        self.concept_id_to_text = {}
+
         self.eval_steps = kwargs.get("eval_steps", 20)
         self.log_per_step = kwargs.get("log_per_step", 10)
         self.include_sentence_in_embedding = kwargs.get(
             "include_sentence_in_embedding", False
         )
-        self.metadata = load_metadata(kwargs.get("metadata_path"))
 
-    # TrainerMixin implementation
     def setup_model(self, training_args, model_config, **kwargs):
         """Setup the model for training."""
-        self.concept_embedding = self._setup_model_for_distributed(
-            self.concept_embedding
-        )
         self.concept_embedding.train()
         self.ax.train()
 
@@ -396,12 +357,10 @@ class HyperSteer(Model, TrainerMixin):
         ]
         concept_strings = []
         for concept_id in inputs["concept_ids"]:
-            concept_str = f"concept_{concept_id.item()}"
-            if hasattr(self, "metadata") and self.metadata is not None:
-                for meta_item in self.metadata:
-                    if meta_item.get("concept_id") == concept_id.item():
-                        concept_str = meta_item.get("concept", concept_str)
-                        break
+            concept_id_val = concept_id.item()
+            concept_str = self.concept_id_to_text.get(
+                concept_id_val, f"concept_{concept_id_val}"
+            )
             concept_strings.append(concept_str)
 
         self._visualize_token_heatmap(
@@ -424,12 +383,10 @@ class HyperSteer(Model, TrainerMixin):
         ]
         concept_strings = []
         for concept_id in inputs["concept_ids"]:
-            concept_str = f"concept_{concept_id.item()}"
-            if hasattr(self, "metadata") and self.metadata is not None:
-                for meta_item in self.metadata:
-                    if meta_item.get("concept_id") == concept_id.item():
-                        concept_str = meta_item.get("concept", concept_str)
-                        break
+            concept_id_val = concept_id.item()
+            concept_str = self.concept_id_to_text.get(
+                concept_id_val, f"concept_{concept_id_val}"
+            )
             concept_strings.append(concept_str)
 
         self._visualize_token_heatmap(
@@ -443,15 +400,6 @@ class HyperSteer(Model, TrainerMixin):
             viz_mode="val/mask",
             title_prefix="Validation",
         )
-
-    def _setup_model_for_distributed(self, model):
-        """Setup model for distributed training if needed."""
-        if dist.is_initialized() and dist.get_world_size() > 1:
-            rank = get_rank()
-            device = torch.device(f"cuda:{rank}")
-            model = model.to(device)
-            model = DDP(model, device_ids=[rank])
-        return model
 
     def compute_main_loss_and_outputs(
         self,
@@ -484,6 +432,15 @@ class HyperSteer(Model, TrainerMixin):
                 output_hidden_states=False,
             ).last_hidden_state
 
+        if self.model_config.debug_print:
+            debug_print(
+                inputs["input_ids"],
+                inputs["attention_mask"],
+                inputs["labels"],
+                inputs["intervention_locations"],
+                self.tokenizer,
+            )
+
         self.ax._update_v(v)
         base_output, cf_outputs = self.ax_model(
             base={
@@ -499,6 +456,7 @@ class HyperSteer(Model, TrainerMixin):
         self.ax._reset_v()
 
         steering_loss = cf_outputs.loss
+
         loss = steering_loss
         return loss
 
@@ -574,9 +532,38 @@ class HyperSteer(Model, TrainerMixin):
             "predict_latent is not implemented. Latent logic has been removed."
         )
 
+    def _extract_concept_metadata_from_dataset(self, examples):
+        """Extract concept ID to concept text mapping from the dataset."""
+        concept_id_to_text = {}
+
+        # Extract from output_concept column if available
+        if "output_concept" in examples.columns:
+            for _, row in examples.iterrows():
+                concept_id = row.get("concept_id")
+                concept_text = row.get("output_concept")
+                if concept_id is not None and concept_text is not None:
+                    concept_id_to_text[concept_id] = concept_text
+
+        # Also check for input_concept column as fallback
+        elif "input_concept" in examples.columns:
+            for _, row in examples.iterrows():
+                concept_id = row.get("concept_id")
+                concept_text = row.get("input_concept")
+                if concept_id is not None and concept_text is not None:
+                    concept_id_to_text[concept_id] = concept_text
+
+        return concept_id_to_text
+
     def make_dataloader(
         self, examples, rank, world_size, shuffle=True, distributed=False, **kwargs
     ):
+        # Extract concept metadata from dataset before creating dataloader
+        extracted_concept_mapping = self._extract_concept_metadata_from_dataset(
+            examples
+        )
+        # Update the concept_id_to_text mapping with extracted data
+        self.concept_id_to_text.update(extracted_concept_mapping)
+
         if distributed:
             sampler = DistributedSampler(
                 examples, num_replicas=world_size, rank=rank, shuffle=shuffle
@@ -638,7 +625,7 @@ class HyperSteer(Model, TrainerMixin):
                 )
                 logger.debug(f"Loaded selection head from {path}")
 
-    def get_logits(self, concept_id, metadata=None, k=10):
+    def get_logits(self, concept_id, k=10):
         top_logits, neg_logits = [None], [None]
 
         W_U = self.model.lm_head.weight.T
@@ -651,17 +638,9 @@ class HyperSteer(Model, TrainerMixin):
         )
         W_U -= einops.reduce(W_U, "d_model d_vocab -> 1 d_vocab", "mean")
 
-        if metadata is not None:
-            concept_text = None
-            for d in metadata:
-                if d["concept_id"] == concept_id:
-                    concept_text = d["concept"]
-                    break
-            if concept_text is None:
-                raise ValueError("Concept ID not found in metadata.")
-
-        else:
-            concept_text = self.concept_id_to_text[concept_id]
+        concept_text = self.concept_id_to_text.get(concept_id)
+        if concept_text is None:
+            raise ValueError(f"Concept ID {concept_id} not found in concept mapping.")
 
         concept_input = self.base_model_tokenizer(
             concept_text,
@@ -690,9 +669,29 @@ class HyperSteer(Model, TrainerMixin):
 
     @torch.no_grad()
     def predict_steer(self, examples, **kwargs):
+        """Use the generic inference function."""
         self.ax_model = monkeypatch_ax_model_generate(self.ax_model)
         self.ax.eval()
-        self.tokenizer.padding_side = "left"
+
+        # Import the generic inference function from the root directory
+        import importlib.util
+        import os
+
+        # Get the path to inference.py in the root directory
+        root_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        inference_path = os.path.join(root_dir, "inference.py")
+
+        # Load the module dynamically
+        spec = importlib.util.spec_from_file_location("inference", inference_path)
+        inference_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(inference_module)
+
+        run_steering_inference = inference_module.run_steering_inference
+
+        return run_steering_inference(self, examples, **kwargs)
+
+    def predict_step(self, batch_examples, batch_idx, **kwargs):
+        """HyperSteer-specific prediction step with concept embeddings and visualizations."""
         self.dump_dir = kwargs.get("dump_dir", None)
         concept_id_col = (
             "sae_id"
@@ -701,14 +700,9 @@ class HyperSteer(Model, TrainerMixin):
             else "concept_id"
         )
         use_synergy = kwargs.get("use_synergy", False)
-        batch_size = kwargs.get("batch_size", 64)
         eval_output_length = kwargs.get("eval_output_length", 128)
         temperature = kwargs.get("temperature", 1.0)
-        all_generations = []
-        all_perplexities = []
-        all_strengths = []
-        all_steering_vectors = []  # <-- Add this line
-        total_batches = (len(examples) + batch_size - 1) // batch_size
+
         infer_dump_dir = os.path.join(
             kwargs.get("dump_dir") or "assets/cache/sparse_masks", "inference_steer"
         )
@@ -719,353 +713,209 @@ class HyperSteer(Model, TrainerMixin):
         )
         os.makedirs(cross_attn_dump_dir, exist_ok=True)
 
-        with torch.inference_mode():
-            for batch_idx, i in enumerate(
-                tqdm(
-                    range(0, len(examples), batch_size),
-                    desc="Generating steered text",
-                    total=total_batches,
+        # Process batch data
+        if use_synergy:
+            input_strings = batch_examples["steered_input"].tolist()
+        else:
+            input_strings = batch_examples["input"].tolist()
+
+        mag = torch.tensor(batch_examples["factor"].tolist()).to(self.device)
+        idx = torch.tensor(batch_examples["concept_id"].tolist()).to(self.device)
+        max_acts = torch.tensor(
+            [
+                self.max_activations.get(id, 1.0)
+                for id in batch_examples[concept_id_col].tolist()
+            ]
+        ).to(self.device)
+
+        inputs = self.tokenizer(
+            input_strings, return_tensors="pt", padding=True, truncation=True
+        ).to(self.device)
+
+        if self.model_config.include_sentence_in_embedding:
+            input_concept = []
+            concepts = batch_examples["input_concept"].tolist()
+            inputs_list = batch_examples["input"].tolist()
+            assert len(concepts) == len(inputs_list)
+            for concept, input_string in zip(concepts, inputs_list):
+                input_concept.append(concept + " [Input] " + input_string)
+        else:
+            input_concept = batch_examples["input_concept"].tolist()
+
+        concept_inputs = self.base_model_tokenizer(
+            input_concept,
+            return_tensors="pt",
+            add_special_tokens=True,
+            padding=True,
+            truncation=True,
+        ).to(self.device)
+
+        # --- Concept embedding (v) ---
+        if self.model_config.hypernet_type == "regression":
+            v = self.concept_embedding(
+                concept_inputs["input_ids"],
+                concept_inputs["attention_mask"],
+            )
+        elif self.model_config.hypernet_type == "attn":
+            concept_inputs_embeds = self.model.model.embed_tokens(
+                concept_inputs["input_ids"]
+            )
+            base_intervention_mask = inputs["attention_mask"]
+            base_hidden_state = self.model(
+                input_ids=inputs["input_ids"],
+                attention_mask=inputs["attention_mask"],
+                output_hidden_states=True,
+            ).hidden_states[self.layer]
+
+            if self.model_config.cross_attn_heatmap_visualization.log_heatmap:
+                outputs = self.concept_embedding(
+                    input_ids=None,
+                    inputs_embeds=concept_inputs_embeds,
+                    attention_mask=concept_inputs["attention_mask"],
+                    base_encoder_hidden_states=base_hidden_state,
+                    base_encoder_attention_mask=base_intervention_mask,
+                    output_hidden_states=False,
+                    output_attentions=True,
+                    return_dict=True,
                 )
-            ):
-                batch_examples = examples.iloc[i : i + batch_size]
-                if use_synergy:
-                    input_strings = batch_examples["steered_input"].tolist()
-                else:
-                    input_strings = batch_examples["input"].tolist()
-                mag = torch.tensor(batch_examples["factor"].tolist()).to(self.device)
-                idx = torch.tensor(batch_examples["concept_id"].tolist()).to(
-                    self.device
+                v = outputs.last_hidden_state
+                cross_attn_weights = outputs.cross_attentions
+                freq = (
+                    self.model_config.cross_attn_heatmap_visualization.log_heatmap_freq
                 )
-                max_acts = torch.tensor(
-                    [
-                        self.max_activations.get(id, 1.0)
-                        for id in batch_examples[concept_id_col].tolist()
-                    ]
-                ).to(self.device)
-                inputs = self.tokenizer(
-                    input_strings, return_tensors="pt", padding=True, truncation=True
-                ).to(self.device)
-
-                if self.model_config.include_sentence_in_embedding:
-                    input_concept = []
-                    concepts = batch_examples["input_concept"].tolist()
-                    inputs_list = batch_examples["input"].tolist()
-                    assert len(concepts) == len(inputs_list)
-                    for concept, input_string in zip(concepts, inputs_list):
-                        input_concept.append(concept + " [Input] " + input_string)
-                else:
-                    input_concept = batch_examples["input_concept"].tolist()
-
-                concept_inputs = self.base_model_tokenizer(
-                    input_concept,
-                    return_tensors="pt",
-                    add_special_tokens=True,
-                    padding=True,
-                    truncation=True,
-                ).to(self.device)
-
-                # --- Concept embedding (v) ---
-                if self.model_config.hypernet_type == "regression":
-                    v = self.concept_embedding(
+                if batch_idx % freq == 0:
+                    self._save_cross_attn_heatmaps(
+                        cross_attn_weights,
+                        inputs["input_ids"],
                         concept_inputs["input_ids"],
+                        inputs["attention_mask"],
                         concept_inputs["attention_mask"],
+                        cross_attn_dump_dir,
+                        batch_idx,
+                        tokenizer=self.tokenizer,
+                        prefix="cross_attn",
                     )
-                elif self.model_config.hypernet_type == "attn":
-                    concept_inputs_embeds = self.model.model.embed_tokens(
-                        concept_inputs["input_ids"]
-                    )
-                    base_intervention_mask = inputs["attention_mask"]
-                    base_hidden_state = self.model(
-                        input_ids=inputs["input_ids"],
-                        attention_mask=inputs["attention_mask"],
-                        output_hidden_states=True,
-                    ).hidden_states[self.layer]
+            else:
+                v = self.concept_embedding(
+                    input_ids=None,
+                    inputs_embeds=concept_inputs_embeds,
+                    attention_mask=concept_inputs["attention_mask"],
+                    base_encoder_hidden_states=base_hidden_state,
+                    base_encoder_attention_mask=base_intervention_mask,
+                    output_hidden_states=False,
+                ).last_hidden_state
 
-                    if self.model_config.cross_attn_heatmap_visualization.log_heatmap:
-                        outputs = self.concept_embedding(
-                            input_ids=None,
-                            inputs_embeds=concept_inputs_embeds,
-                            attention_mask=concept_inputs["attention_mask"],
-                            base_encoder_hidden_states=base_hidden_state,
-                            base_encoder_attention_mask=base_intervention_mask,
-                            output_hidden_states=False,
-                            output_attentions=True,
-                            return_dict=True,
-                        )
-                        v = outputs.last_hidden_state
-                        cross_attn_weights = outputs.cross_attentions
-                        freq = self.model_config.cross_attn_heatmap_visualization.log_heatmap_freq
-                        if batch_idx % freq == 0:
-                            self._save_cross_attn_heatmaps(
-                                cross_attn_weights,
-                                inputs["input_ids"],
-                                concept_inputs["input_ids"],
-                                inputs["attention_mask"],  # concept_attention_mask
-                                concept_inputs[
-                                    "attention_mask"
-                                ],  # input_attention_mask
-                                cross_attn_dump_dir,
-                                batch_idx,
-                                tokenizer=self.tokenizer,
-                                prefix="cross_attn",
-                            )
-                    else:
-                        v = self.concept_embedding(
-                            input_ids=None,
-                            inputs_embeds=concept_inputs_embeds,
-                            attention_mask=concept_inputs["attention_mask"],
-                            base_encoder_hidden_states=base_hidden_state,
-                            base_encoder_attention_mask=base_intervention_mask,
-                            output_hidden_states=False,
-                        ).last_hidden_state
+        # Store steering vectors for each example in the batch (move to cpu)
+        v_np = v.detach().float().cpu().numpy()
+        steering_vectors = [row.copy() for row in v_np]
 
-                # Store steering vectors for each example in the batch (move to cpu)
-                v_np = v.detach().float().cpu().numpy()
-                for row in v_np:
-                    all_steering_vectors.append(row.copy())
+        self.ax._update_v(v)
 
-                self.ax._update_v(v)
+        locs = get_batch_locs(
+            prefix_length=kwargs["prefix_length"],
+            inputs=batch_examples["input"],
+            attention_mask=inputs["attention_mask"],
+            tokenizer=self.tokenizer,
+        )
 
-                locs = get_batch_locs(
-                    prefix_length=kwargs["prefix_length"],
-                    inputs=batch_examples["input"],
-                    attention_mask=inputs["attention_mask"],
-                    tokenizer=self.tokenizer,
-                )
+        # Always define subspaces as a list of dicts (one per layer)
+        subspaces = [
+            {
+                "idx": idx,
+                "mag": mag,
+                "max_act": max_acts,
+                "prefix_length": kwargs["prefix_length"],
+                "locs": locs.to(self.device),
+            }
+            for _ in range(self.num_of_layers)
+        ]
 
-                # Always define subspaces as a list of dicts (one per layer)
-                subspaces = [
-                    {
-                        "idx": idx,
-                        "mag": mag,
-                        "max_act": max_acts,
-                        "prefix_length": kwargs["prefix_length"],
-                        "locs": locs.to(self.device),
-                    }
-                    for _ in range(self.num_of_layers)
-                ]
+        # Generate with intervention (steered)
+        base_out, steered_out = self.ax_model.generate(
+            inputs,
+            unit_locations=None,
+            intervene_on_prompt=True,
+            subspaces=subspaces,
+            max_new_tokens=eval_output_length,
+            do_sample=True,
+            temperature=temperature,
+            output_original_output=True,
+            return_dict_in_generate=True,
+            output_scores=True,
+        )
 
-                # Generate with intervention (steered)
-                base_out, steered_out = self.ax_model.generate(
-                    inputs,
-                    unit_locations=None,
-                    intervene_on_prompt=True,
-                    subspaces=subspaces,
-                    max_new_tokens=eval_output_length,
-                    do_sample=True,
-                    temperature=temperature,
-                    output_original_output=True,
-                    return_dict_in_generate=True,
-                    output_scores=True,
-                )
+        # Get generated sequences
+        if isinstance(steered_out, dict):
+            generations = steered_out.get("sequences", None)
+        else:
+            generations = getattr(steered_out, "sequences", None)
 
-                # Get generated sequences
-                if isinstance(steered_out, dict):
-                    generations = steered_out.get("sequences", None)
-                else:
-                    generations = getattr(steered_out, "sequences", None)
+        # Forward pass through ax_model to get full logits for generated sequences
+        gen_attention_mask = (generations != self.tokenizer.pad_token_id).long()
+        with torch.no_grad():
+            base_out_gen, steered_out_gen = self.ax_model(
+                base={
+                    "input_ids": generations,
+                    "attention_mask": gen_attention_mask,
+                },
+                unit_locations=None,
+                labels=None,
+                subspaces=subspaces,
+                use_cache=False,
+                output_original_output=True,
+            )
 
-                # Forward pass through ax_model to get full logits for generated sequences
-                gen_attention_mask = (generations != self.tokenizer.pad_token_id).long()
-                with torch.no_grad():
-                    base_out_gen, steered_out_gen = self.ax_model(
-                        base={
-                            "input_ids": generations,
-                            "attention_mask": gen_attention_mask,
-                        },
-                        unit_locations=None,
-                        labels=None,
-                        subspaces=subspaces,
-                        use_cache=False,
-                        output_original_output=True,
-                    )
-                # Logit diff visualization every N batches (on generated text)
-                if (
-                    self.model_config.logit_diff_visualization.log_heatmap
-                    and batch_idx
-                    % self.model_config.logit_diff_visualization.log_heatmap_freq
-                    == 0
-                ):
-                    self._logit_diff_visualization(
-                        base_out_gen,
-                        steered_out_gen,
-                        {
-                            "input_ids": generations,
-                            "attention_mask": gen_attention_mask,
-                        },
-                        mode="steer/logit_diff",
-                        step=batch_idx,
-                        normalize=False,
-                        dump_dir=self.dump_dir,
-                    )
+        # Logit diff visualization every N batches (on generated text)
+        if (
+            self.model_config.logit_diff_visualization.log_heatmap
+            and batch_idx % self.model_config.logit_diff_visualization.log_heatmap_freq
+            == 0
+        ):
+            self._logit_diff_visualization(
+                base_out_gen,
+                steered_out_gen,
+                {
+                    "input_ids": generations,
+                    "attention_mask": gen_attention_mask,
+                },
+                mode="steer/logit_diff",
+                step=batch_idx,
+                normalize=False,
+                dump_dir=self.dump_dir,
+            )
 
-                del base_out, steered_out, base_out_gen, steered_out_gen
-                gc.collect()
-                torch.cuda.empty_cache()
+        # Decode and print only the generated text without prompt tokens
+        input_lengths = [len(input_ids) for input_ids in inputs.input_ids]
+        generated_texts = [
+            self.tokenizer.decode(generation[input_length:], skip_special_tokens=True)
+            for generation, input_length in zip(generations, input_lengths)
+        ]
 
-                # Construct the flat viz-ready mask for generated text
-                if self.model_config.use_selection_head:
-                    gathered_sparse_mask = self.ax_model.full_intervention_outputs[
-                        0
-                    ].payload.get("mask", None)
+        # Calculate perplexity for each sequence
+        unpruned_generated_texts = [
+            self.tokenizer.decode(generation, skip_special_tokens=True)
+            for generation in generations
+        ]
 
-                    if (
-                        gathered_sparse_mask is not None
-                        and self.training_args.use_selection_head
-                    ):
-                        for output in self.ax_model.full_intervention_outputs[1:]:
-                            current_mask = output.payload.get("mask", None)
-                            if (
-                                current_mask is not None
-                                and gathered_sparse_mask.shape[0]
-                                == current_mask.shape[0]
-                            ):
-                                gathered_sparse_mask = torch.cat(
-                                    [gathered_sparse_mask, current_mask], dim=-1
-                                )
-                    # Visualize mask if enabled
-                    if (
-                        gathered_sparse_mask is not None
-                        and self.model_config.use_selection_head
-                        and self.model_config.use_selection_head
-                    ):
-                        batch_tokens = []
-                        for generated_ids in generations:
-                            valid_tokens = self.tokenizer.convert_ids_to_tokens(
-                                generated_ids
-                            )
-                            batch_tokens.append(valid_tokens)
-                        concept_ids = batch_examples["concept_id"].tolist()
-                        concept_strings = []
-                        for concept_id in concept_ids:
-                            concept_str = f"concept_{concept_id}"
-                            for meta_item in self.metadata:
-                                if meta_item.get("concept_id") == concept_id:
-                                    concept_str = meta_item.get("concept", concept_str)
-                                    break
-                            concept_strings.append(concept_str)
-                        _attn_mask = torch.cat(
-                            [
-                                inputs["attention_mask"],
-                                torch.ones_like(
-                                    generations,
-                                    dtype=torch.long,
-                                    device=inputs["attention_mask"].device,
-                                ),
-                            ],
-                            dim=-1,
-                        )
-                        self._visualize_token_heatmap(
-                            gathered_sparse_mask.cpu().squeeze(),  # move to cpu
-                            step=i // batch_size,
-                            dump_dir=infer_dump_dir,
-                            batch_tokens=batch_tokens,
-                            concept_ids=concept_ids,
-                            concept_strings=concept_strings,
-                            attention_mask=_attn_mask.cpu(),
-                            viz_mode="pred/mask",
-                            title_prefix="Prediction",
-                        )
-                        del (
-                            batch_tokens,
-                            concept_ids,
-                            concept_strings,
-                            _attn_mask,
-                            gathered_sparse_mask,
-                        )
-                        gc.collect()
-                        torch.cuda.empty_cache()
+        perplexities = calculate_perplexity(
+            self.model, self.tokenizer, unpruned_generated_texts, self.device
+        )
 
-                # Decode and print only the generated text without prompt tokens
-                input_lengths = [len(input_ids) for input_ids in inputs.input_ids]
-                generated_texts = [
-                    self.tokenizer.decode(
-                        generation[input_length:], skip_special_tokens=True
-                    )
-                    for generation, input_length in zip(generations, input_lengths)
-                ]
-                all_generations += generated_texts
+        strengths = (mag * max_acts).cpu().float().tolist()
 
-                # Calculate perplexity for each sequence
-                unpruned_generated_texts = [
-                    self.tokenizer.decode(generation, skip_special_tokens=True)
-                    for generation in generations
-                ]
-                batch_input_ids = self.tokenizer(
-                    unpruned_generated_texts,
-                    return_tensors="pt",
-                    padding=True,
-                    truncation=True,
-                ).input_ids.to(self.device)
-                batch_attention_mask = (
-                    batch_input_ids != self.tokenizer.pad_token_id
-                ).float()
+        # Clear the steering vector generated for this batch
+        self.ax._reset_v()
 
-                outputs = self.model(
-                    input_ids=batch_input_ids, attention_mask=batch_attention_mask
-                )
-
-                logits = outputs.logits[
-                    :, :-1, :
-                ].contiguous()  # Remove last token prediction
-                target_ids = batch_input_ids[:, 1:].contiguous()  # Shift right by 1
-
-                loss_fct = torch.nn.CrossEntropyLoss(reduction="none")
-                token_losses = loss_fct(
-                    logits.view(-1, logits.size(-1)), target_ids.view(-1)
-                )
-
-                token_losses = token_losses.view(batch_input_ids.size(0), -1)
-                mask = batch_attention_mask[:, 1:].contiguous()
-
-                seq_lengths = mask.sum(dim=1)
-                seq_losses = (token_losses * mask).sum(dim=1) / seq_lengths
-                seq_perplexities = torch.exp(seq_losses).cpu().float().tolist()
-                all_perplexities.extend(seq_perplexities)
-                all_strengths.extend((mag * max_acts).cpu().float().tolist())
-
-                # clear the steering vector generated for this batch
-                self.ax._reset_v()
-                del v, v_np
-                gc.collect()
-                torch.cuda.empty_cache()
-
-                # Free up all batch tensors and call empty_cache
-                del (
-                    batch_examples,
-                    input_strings,
-                    mag,
-                    idx,
-                    max_acts,
-                    inputs,
-                    input_concept,
-                    concept_inputs,
-                    generations,
-                    gen_attention_mask,
-                    unpruned_generated_texts,
-                    batch_input_ids,
-                    batch_attention_mask,
-                    outputs,
-                    logits,
-                    target_ids,
-                    loss_fct,
-                    token_losses,
-                    mask,
-                    seq_lengths,
-                    seq_losses,
-                    seq_perplexities,
-                    generated_texts,
-                    subspaces,
-                    locs,
-                )
-                gc.collect()
-                torch.cuda.empty_cache()
+        # Cleanup
+        del base_out, steered_out, base_out_gen, steered_out_gen, v, v_np
+        gc.collect()
+        torch.cuda.empty_cache()
 
         return {
-            "steered_generation": all_generations,
-            "perplexity": all_perplexities,
-            "strength": all_strengths,
-            "steering_vector": all_steering_vectors,
+            "generations": generated_texts,
+            "perplexities": perplexities,
+            "strengths": strengths,
+            "steering_vectors": steering_vectors,
         }
 
     def _logit_diff_visualization(
@@ -1109,7 +959,8 @@ class HyperSteer(Model, TrainerMixin):
             attention_mask=inputs["attention_mask"],
             concept_ids=inputs["concept_ids"] if "concept_ids" in inputs else None,
             concept_strings=[
-                f"concept_{concept_id}" for concept_id in inputs["concept_ids"].tolist()
+                self.concept_id_to_text.get(concept_id, f"concept_{concept_id}")
+                for concept_id in inputs["concept_ids"].tolist()
             ]
             if "concept_ids" in inputs and hasattr(inputs["concept_ids"], "tolist")
             else None,

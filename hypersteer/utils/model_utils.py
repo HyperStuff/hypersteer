@@ -10,6 +10,41 @@ import torch
 from tqdm.auto import tqdm
 
 
+def calculate_perplexity(model, tokenizer, generated_texts, device):
+    """
+    Helper function to calculate perplexity for generated texts.
+    This is common across all model implementations.
+    """
+    batch_input_ids = tokenizer(
+        generated_texts,
+        return_tensors="pt",
+        padding=True,
+        truncation=True,
+    ).input_ids.to(device)
+    batch_attention_mask = (batch_input_ids != tokenizer.pad_token_id).float()
+
+    # Forward pass without labels to get logits
+    outputs = model(input_ids=batch_input_ids, attention_mask=batch_attention_mask)
+
+    logits = outputs.logits[:, :-1, :].contiguous()  # Remove last token prediction
+    target_ids = batch_input_ids[:, 1:].contiguous()  # Shift right by 1
+
+    # Calculate loss for each token
+    loss_fct = torch.nn.CrossEntropyLoss(reduction="none")
+    token_losses = loss_fct(logits.view(-1, logits.size(-1)), target_ids.view(-1))
+
+    # Reshape losses and mask
+    token_losses = token_losses.view(batch_input_ids.size(0), -1)
+    mask = batch_attention_mask[:, 1:].contiguous()
+
+    # Calculate perplexity for each sequence
+    seq_lengths = mask.sum(dim=1)
+    seq_losses = (token_losses * mask).sum(dim=1) / seq_lengths
+    seq_perplexities = torch.exp(seq_losses).cpu().float().tolist()
+
+    return seq_perplexities
+
+
 def clip_grad_norm_sparse(parameters, max_norm, norm_type=2.0, eps=1e-6):
     """
     Clips gradient norm of an iterable of parameters (e.g. model.parameters())

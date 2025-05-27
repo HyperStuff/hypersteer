@@ -94,7 +94,7 @@ class DatasetConfig(BaseConfigModel):
     max_concepts: int = 500  # Updated to match config
     num_of_examples: int = 144  # Updated to match config
     filter_length: int = 512
-    master_data_dir: str | Path = "axbench/data"
+    master_data_dir: str | Path | None = None
     shuffle: bool = True
     dev_size: float = 0.1
     select_column: str = "prompt"
@@ -178,12 +178,12 @@ class ModelConfig(BaseConfigModel):
 
     # Model-specific features
     use_synergy: bool = False
-    sparse_embedding: bool = False
     use_selection_head: bool = False
     use_selection_ln: bool = True
+    selection_l1_loss_coeff: float = 1e-3
     include_sentence_in_embedding: bool = False
-    do_reconstruction: bool = False
-    reconstruction_dict_path: str | Path | None = None
+
+    debug_print: bool = False
 
     # Visualization configs (model-specific)
     logit_diff_visualization: VisualizationConfig = Field(
@@ -242,9 +242,8 @@ class GenerateConfig(BaseConfigModel):
     lm_model: str = "gpt-4o-mini"
     output_length: int = 128
     num_of_examples: int = 144
-    concept_path: str | Path = "axbench/data/gemma-2-2b_20-gemmascope-res-16k.json"
     max_concepts: int = 500
-    master_data_dir: str | Path = "axbench/data"
+    master_data_dir: str | Path | None = None
     dataset_category: str = "instruction"
     lm_use_cache: bool = False
     seed: int = 42
@@ -282,7 +281,7 @@ class InferenceConfig(BaseConfigModel):
     steering_factors: list[float] = Field(default_factory=lambda: [1.0])
     ignore_steering_state: bool = False
 
-    master_data_dir: str | Path = "axbench/data"
+    master_data_dir: str | Path | None = None
     seed: int = 42
     lm_model: str = "gpt-4o-mini"
     use_cache: bool = True
@@ -330,7 +329,7 @@ class EvalArgs(BaseConfigModel):
     enable_progress_bar: bool = True
     run_winrate: bool = False
     winrate_baseline: str = "PromptSteering"
-    master_data_dir: str | Path = "axbench/data"
+    master_data_dir: str | Path | None = None
     report_to: str | None = None
 
     run_distinct_evals: bool = False

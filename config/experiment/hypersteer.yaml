@@ -2,17 +2,33 @@
 # HyperSteer experiment - only overrides what's different from base
 
 defaults:
-  - base  # Inherit from base experiment
+  - base # Inherit from base experiment
   - _self_
 
+train:
+  lr: 8e-5
+  epochs: 3
+  batch_size: 16
+  test_batch_size: 8
+  gradient_accumulation_steps: 1
+  n_steps: -1
+  val_interval: 100
+  checkpoint_per_step: null
+  debug: false
+
 model:
-  use_selection_head: true
-  
-  # Enhanced visualization for hypersteer
-  cross_attn_heatmap_visualization:
-    log_heatmap_freq: 5  # More frequent logging
-    pdf_visualization: true
-    png_visualization: true 
+  use_selection_head: false
+  selection_l1_loss_coeff: 1e-3
+  use_selection_ln: false
+  hypernet_type: "attn"
+  cross_attn_hidden_layers: 8
+
+  mask_visualization:
+    log_heatmap: false
+    log_heatmap_freq: 10
+    pdf_visualization: false
+    png_visualization: false
+    log_all_examples: true
 
 wandb:
   project: "hypersteer"

@@ -9,7 +9,7 @@ concept_path: null
 max_concepts: 500
 num_of_examples: 144
 filter_length: 512
-master_data_dir: "axbench/data"
+master_data_dir: null
 shuffle: true
 dev_size: 0.1
 select_column: "prompt"

@@ -23,12 +23,12 @@ special_tokens: []
 
 # Model-specific features
 use_synergy: false
-sparse_embedding: false
 use_selection_head: false
 use_selection_ln: true
 include_sentence_in_embedding: false
 do_reconstruction: false
 reconstruction_dict_path: null
+debug_print: false
 
 # Visualization configs
 logit_diff_visualization:

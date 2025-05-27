@@ -9,10 +9,6 @@ train:
   save_dir: assets/checkpoints
   run_eval_suite_at_end: true
 
-# Model overrides  
-model:
-  include_sentence_in_embedding: true
-
 # Inference overrides
 inference:
   latent_batch_size: 24

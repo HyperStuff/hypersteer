@@ -7,11 +7,11 @@ from pyvene import (
     IntervenableModel,
 )
 from torch.utils.data import DataLoader
-from tqdm.auto import tqdm
 
-from hypersteer.utils.configs import ModelConfig, TrainingArgs, WandbConfig
 from hypersteer.data.utils import *  # noqa: F403
-from hypersteer.utils.helpers import get_logger, get_rank
+from hypersteer.utils.configs import ModelConfig, TrainingArgs, WandbConfig
+from hypersteer.utils.helpers import get_logger
+
 from .base import BaseModel
 
 # Initialize the logger
@@ -48,6 +48,30 @@ class Model(BaseModel):
     def make_model(self, **kwargs):
         pass
 
+    def train(self):
+        """
+        Set the model and any torch modules in this class to train mode.
+        """
+        if hasattr(self.model, "train"):
+            self.model.train()
+        # If there are other torch.nn.Module attributes, set them to train mode as well
+        for attr_name in dir(self):
+            attr = getattr(self, attr_name)
+            if isinstance(attr, torch.nn.Module) and attr is not self.model:
+                attr.train()
+
+    def eval(self):
+        """
+        Set the model and any torch modules in this class to eval mode.
+        """
+        if hasattr(self.model, "eval"):
+            self.model.eval()
+        # If there are other torch.nn.Module attributes, set them to eval mode as well
+        for attr_name in dir(self):
+            attr = getattr(self, attr_name)
+            if isinstance(attr, torch.nn.Module) and attr is not self.model:
+                attr.eval()
+
     def make_dataloader(self, examples, **kwargs):
         data_module = make_data_module(self.tokenizer, examples, **kwargs)  # noqa: F405
         g = torch.Generator()
@@ -60,9 +84,6 @@ class Model(BaseModel):
             generator=g,
         )
         return train_dataloader
-
-    def train(self, examples, **kwargs):
-        pass
 
     def save(self, dump_dir, **kwargs):
         model_name = kwargs.get("model_name", self.__str__())
@@ -92,9 +113,32 @@ class Model(BaseModel):
 
     @torch.no_grad()
     def predict_steer(self, examples, **kwargs):
+        """Use the generic inference function."""
         self.ax.eval()
-        # set tokenizer padding to left
-        self.tokenizer.padding_side = "left"
+
+        # Import the generic inference function
+        try:
+            from inference import run_steering_inference
+        except ImportError:
+            # Fallback for when running from different directory
+            import importlib.util
+            import os
+
+            # Get the path to inference.py in the root directory
+            root_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+            inference_path = os.path.join(root_dir, "inference.py")
+
+            # Load the module dynamically
+            spec = importlib.util.spec_from_file_location("inference", inference_path)
+            inference_module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(inference_module)
+
+            run_steering_inference = inference_module.run_steering_inference
+
+        return run_steering_inference(self, examples, **kwargs)
+
+    def predict_step(self, batch_examples, batch_idx, **kwargs):
+        """Model-specific prediction step for basic steering models."""
         # depending on the model, we use different concept id columns
         concept_id_col = (
             "sae_id"
@@ -103,114 +147,73 @@ class Model(BaseModel):
             else "concept_id"
         )
         use_synergy = kwargs.get("use_synergy", False)
-
-        # iterate rows in batch
-        batch_size = kwargs.get("batch_size", 64)
         eval_output_length = kwargs.get("eval_output_length", 128)
         temperature = kwargs.get("temperature", 1.0)
-        all_generations = []
-        all_perplexities = []
-        all_strenghts = []
-        # Main training loop.
-        rank = get_rank()
-        progress_bar = tqdm(
-            range(0, len(examples), batch_size), position=rank, leave=True
+
+        if use_synergy:
+            input_strings = batch_examples["steered_input"].tolist()
+        else:
+            input_strings = batch_examples["input"].tolist()
+
+        mag = torch.tensor(batch_examples["factor"].tolist()).to(self.device)
+        idx = torch.tensor(batch_examples["concept_id"].tolist()).to(self.device)
+        max_acts = torch.tensor(
+            [
+                self.max_activations.get(id, 1.0)
+                for id in batch_examples[concept_id_col].tolist()
+            ]
+        ).to(self.device)
+
+        # tokenize input_strings
+        inputs = self.tokenizer(
+            input_strings, return_tensors="pt", padding=True, truncation=True
+        ).to(self.device)
+
+        _, generations = self.ax_model.generate(
+            inputs,
+            unit_locations=None,
+            intervene_on_prompt=True,
+            subspaces=[
+                {
+                    "idx": idx,
+                    "mag": mag,
+                    "max_act": max_acts,
+                    "prefix_length": kwargs["prefix_length"],
+                }
+            ]
+            * self.num_of_layers,
+            max_new_tokens=eval_output_length,
+            do_sample=True,
+            temperature=temperature,
         )
-        for i in range(0, len(examples), batch_size):
-            batch_examples = examples.iloc[i : i + batch_size]
-            if use_synergy:
-                # print("Using steered prompt to evaluate synergy of prompt and lsreft.")
-                input_strings = batch_examples["steered_input"].tolist()
-            else:
-                input_strings = batch_examples["input"].tolist()
-            mag = torch.tensor(batch_examples["factor"].tolist()).to(self.device)
-            idx = torch.tensor(batch_examples["concept_id"].tolist()).to(self.device)
-            max_acts = torch.tensor(
-                [
-                    self.max_activations.get(id, 1.0)
-                    for id in batch_examples[concept_id_col].tolist()
-                ]
-            ).to(self.device)
-            # logger.warning(f"Using max activations: {max_acts}")
-            # tokenize input_strings
-            inputs = self.tokenizer(
-                input_strings, return_tensors="pt", padding=True, truncation=True
-            ).to(self.device)
-            _, generations = self.ax_model.generate(
-                inputs,
-                unit_locations=None,
-                intervene_on_prompt=True,
-                subspaces=[
-                    {
-                        "idx": idx,
-                        "mag": mag,
-                        "max_act": max_acts,
-                        "prefix_length": kwargs["prefix_length"],
-                    }
-                ]
-                * self.num_of_layers,
-                max_new_tokens=eval_output_length,
-                do_sample=True,
-                temperature=temperature,
-            )
 
-            # Decode and print only the generated text without prompt tokens
-            input_lengths = [len(input_ids) for input_ids in inputs.input_ids]
-            generated_texts = [
-                self.tokenizer.decode(
-                    generation[input_length:], skip_special_tokens=True
-                )
-                for generation, input_length in zip(generations, input_lengths)
-            ]
-            all_generations += generated_texts
+        # Decode and print only the generated text without prompt tokens
+        input_lengths = [len(input_ids) for input_ids in inputs.input_ids]
+        generated_texts = [
+            self.tokenizer.decode(generation[input_length:], skip_special_tokens=True)
+            for generation, input_length in zip(generations, input_lengths)
+        ]
 
-            # Calculate perplexity for each sequence
-            unpruned_generated_texts = [
-                self.tokenizer.decode(generation, skip_special_tokens=True)
-                for generation in generations
-            ]
-            batch_input_ids = self.tokenizer(
-                unpruned_generated_texts,
-                return_tensors="pt",
-                padding=True,
-                truncation=True,
-            ).input_ids.to(self.device)
-            batch_attention_mask = (
-                batch_input_ids != self.tokenizer.pad_token_id
-            ).float()
+        # Calculate perplexity for each sequence
+        unpruned_generated_texts = [
+            self.tokenizer.decode(generation, skip_special_tokens=True)
+            for generation in generations
+        ]
 
-            # Forward pass without labels to get logits
-            outputs = self.model(
-                input_ids=batch_input_ids, attention_mask=batch_attention_mask
-            )
+        # Import here to avoid circular imports
+        from hypersteer.training.trainer import calculate_perplexity
 
-            logits = outputs.logits[
-                :, :-1, :
-            ].contiguous()  # Remove last token prediction
-            target_ids = batch_input_ids[:, 1:].contiguous()  # Shift right by 1
+        perplexities = calculate_perplexity(
+            self.model, self.tokenizer, unpruned_generated_texts, self.device
+        )
 
-            # Calculate loss for each token
-            loss_fct = torch.nn.CrossEntropyLoss(reduction="none")
-            token_losses = loss_fct(
-                logits.view(-1, logits.size(-1)), target_ids.view(-1)
-            )
-
-            # Reshape losses and mask
-            token_losses = token_losses.view(batch_input_ids.size(0), -1)
-            mask = batch_attention_mask[:, 1:].contiguous()
-
-            # Calculate perplexity for each sequence
-            seq_lengths = mask.sum(dim=1)
-            seq_losses = (token_losses * mask).sum(dim=1) / seq_lengths
-            seq_perplexities = torch.exp(seq_losses).tolist()
-            all_perplexities.extend(seq_perplexities)
-            all_strenghts.extend((mag * max_acts).tolist())
-            progress_bar.update(1)
+        strengths = (mag * max_acts).cpu().float().tolist()
 
         return {
-            "steered_generation": all_generations,
-            "perplexity": all_perplexities,
-            "strength": all_strenghts,
+            "generations": generated_texts,
+            "perplexities": perplexities,
+            "strengths": strengths,
+            "steering_vectors": [],  # Basic model doesn't have steering vectors
         }
 
     def get_logits(self, concept_id, k=10):

@@ -6,7 +6,6 @@ dataset_category: "instruction"
 max_concepts: 100
 num_of_examples: -1
 cache_dir: "assets/cache"
-concept_path: "data/axbench/gemma-2-2b_20-gemmascope-res-16k.json"
 
 # HuggingFace dataset configuration
 hf_dataset_name: "pyvene/axbench-concept500"

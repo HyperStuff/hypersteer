@@ -98,7 +98,7 @@ def main(cfg: DictConfig):
         split=args.dataset.hf_split,
         cache_dir=args.dataset.cache_dir,
         tokenizer=tokenizer,
-        model_name=args.model.model_name,
+        model_name=args.model.target_model_name,
         binarize=args.train.binarize_dataset,
         train_on_negative=args.train.train_on_negative,
         output_length=args.inference.output_length,
