@@ -2,18 +2,16 @@
 # This script takes arguments to specify the dataset and other configurations.
 
 import gc
-import os
 from datetime import datetime
 from pathlib import Path
 
 import hydra
 import torch
-import torch.distributed as dist
-import wandb
 from dotenv import load_dotenv
 from omegaconf import DictConfig, OmegaConf
 from transformers import AutoModelForCausalLM, AutoTokenizer, set_seed
 
+import wandb
 from evaluate import run_eval
 from hypersteer import get_model
 from hypersteer.data import get_training_dataset
@@ -22,10 +20,7 @@ from hypersteer.utils.configs import ExperimentConfig, config_to_pydantic
 from hypersteer.utils.helpers import (
     configure_tokenizer_model,
     destroy_process_group,
-    get_and_set_device,
     get_logger,
-    get_rank,
-    get_world_size,
 )
 from inference import run_inference
 
@@ -49,26 +44,15 @@ def main(cfg: DictConfig):
     # Convert to pydantic config
     args = config_to_pydantic(config, ExperimentConfig)
 
-    # Initialize the process group
-    try:
-        dist.init_process_group(backend="nccl", init_method="env://")
-    except Exception as e:
-        logger.error(f"Failed to initialize distributed process group: {e}")
-
-    # Get the rank and world_size from environment variables
-    rank = get_rank()
-    world_size = get_world_size()
-    local_rank = int(os.environ.get("LOCAL_RANK", 0))
-
     # Set the device for this process
-    device = get_and_set_device(local_rank)
+    device = torch.cuda.current_device()
     logger.debug(f"Using device {device}")
 
     # Set a unique seed per rank for reproducibility
-    set_seed(args.dataset.seed + rank)
+    set_seed(args.dataset.seed)
 
     run_name = datetime.now().strftime("train_%Y%m%d_%H%M%S%f")
-    if not args.dataset.dump_dir and not args.train.debug:
+    if not args.dataset.dump_dir and not args.debug:
         args.dataset.dump_dir = Path(args.train.save_dir) / run_name
         (args.dataset.dump_dir / "train").mkdir(parents=True, exist_ok=True)
 
@@ -118,7 +102,7 @@ def main(cfg: DictConfig):
     concept_ids = list(set(combined_df.get("concept_id", [0])))
     concept_ids = [cid for cid in concept_ids if cid >= 0]
 
-    if not args.train.debug:
+    if not args.debug:
         OmegaConf.save(
             OmegaConf.create(args.model_dump()),
             args.dataset.dump_dir / "config.yaml",
@@ -139,7 +123,7 @@ def main(cfg: DictConfig):
         int(args.dataset.dev_size * len(combined_df))
         if 0 < args.dataset.dev_size < 1
         else min(int(args.dataset.dev_size), len(combined_df) // 5)
-    ) // world_size
+    )
 
     # Shuffle the dataframe before splitting
     combined_df = combined_df.sample(
@@ -177,25 +161,17 @@ def main(cfg: DictConfig):
         benchmark_model.ax.to(torch.bfloat16)
 
     # Create dataloaders
-    train_dataloader, train_sampler = benchmark_model.make_dataloader(
-        train_df,
-        rank=rank,
-        world_size=world_size,
-        distributed=world_size > 1,
-    )
+    train_dataloader, train_sampler = benchmark_model.make_dataloader(train_df)
 
     dev_dataloader = None
     if len(dev_df) > 0:
         dev_dataloader, _ = benchmark_model.make_dataloader(
             dev_df,
-            rank=rank,
-            world_size=world_size,
             shuffle=False,
-            distributed=world_size > 1,
         )
 
     # Initialize wandb
-    if args.wandb.log and not training_args.debug:
+    if args.wandb.log and not args.debug:
         wandb.init(
             project=args.wandb.project,
             entity=args.wandb.entity,
@@ -224,7 +200,7 @@ def main(cfg: DictConfig):
     trainer.train(train_dataloader, dev_dataloader, train_sampler)
 
     # Save model
-    if rank == 0 and not training_args.debug:
+    if not args.debug:
         benchmark_model.save(
             args.dataset.dump_dir / "train", model_name=model_config.model_name
         )
@@ -237,7 +213,7 @@ def main(cfg: DictConfig):
 
     destroy_process_group()
 
-    if training_args.run_eval_suite_at_end and not training_args.debug:
+    if training_args.run_eval_suite_at_end and not args.debug:
         if not args.inference.factor_selection.enable:
             infer_run = run_inference(args)
             run_eval(args, infer_run=infer_run)

@@ -10,7 +10,7 @@ from pyvene.models.intervenable_base import (
     get_batch_size,
 )
 
-from hypersteer.models.interventions import PayloadInterventionOutput
+from hypersteer.models.modules.interventions import PayloadInterventionOutput
 
 
 def generate(

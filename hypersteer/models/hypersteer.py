@@ -10,7 +10,6 @@ import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.nn.utils
-import wandb
 from pyvene import IntervenableConfig, IntervenableModel
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
@@ -20,22 +19,24 @@ from transformers import (
     AutoTokenizer,
 )
 
+import wandb
 from hypersteer.data.utils import get_batch_locs, make_data_module
 from hypersteer.training import TrainerMixin
 from hypersteer.utils.debug_utils import debug_print
 from hypersteer.utils.helpers import (
     configure_tokenizer_model,
     get_logger,
+    set_default_device,
 )
 from hypersteer.utils.model_utils import calculate_perplexity
 from hypersteer.utils.patch import monkeypatch_ax_model_generate
 from hypersteer.utils.visualization import Visualizer
 
-from .base import register_model
 from .hypernet.configuration_hypernet import HypernetConfig
 from .hypernet.modeling_hypernet import HypernetModel
-from .interventions import HyperAdditiveIntervention
 from .model import Model
+from .modules.interventions import HyperAdditiveIntervention
+from .modules.registry import register_model
 
 logger = get_logger(__name__)
 
@@ -125,11 +126,12 @@ class HyperSteer(Model, TrainerMixin):
                 self.model_config.base_model_name, torch_dtype=torch.bfloat16
             )
             configure_tokenizer_model(base_model, self.base_model_tokenizer)
-            self.concept_embedding = RegressionWrapper(
-                base_model=base_model,
-                hidden_size=base_model.config.hidden_size,
-                output_dim=self.model.config.hidden_size,
-            )
+            with set_default_device(self.device):
+                self.concept_embedding = RegressionWrapper(
+                    base_model=base_model,
+                    hidden_size=base_model.config.hidden_size,
+                    output_dim=self.model.config.hidden_size,
+                )
         elif self.model_config.hypernet_type == "attn":
             hypernet_config = HypernetConfig(
                 num_hidden_layers=self.model_config.cross_attn_hidden_layers,
@@ -137,7 +139,8 @@ class HyperSteer(Model, TrainerMixin):
                 hidden_size=base_model_config.hidden_size,
                 torch_dtype=torch.bfloat16,
             )
-            self.concept_embedding = HypernetModel(config=hypernet_config)
+            with set_default_device(self.device):
+                self.concept_embedding = HypernetModel(config=hypernet_config)
 
         self.concept_embedding = self.concept_embedding.to(
             self.device, dtype=torch.bfloat16
@@ -555,7 +558,7 @@ class HyperSteer(Model, TrainerMixin):
         return concept_id_to_text
 
     def make_dataloader(
-        self, examples, rank, world_size, shuffle=True, distributed=False, **kwargs
+        self, examples, rank=0, world_size=1, shuffle=True, distributed=False, **kwargs
     ):
         # Extract concept metadata from dataset before creating dataloader
         extracted_concept_mapping = self._extract_concept_metadata_from_dataset(

@@ -4,7 +4,7 @@ import time
 from collections import namedtuple
 
 import pandas as pd
-from datasets import concatenate_datasets, load_dataset, load_from_disk
+from datasets import concatenate_datasets, load_dataset
 
 from hypersteer.utils.constants import CHAT_MODELS, EMPTY_CONCEPT
 from hypersteer.utils.helpers import get_logger
@@ -374,7 +374,6 @@ class AxbenchDatasetFactory(BaseDatasetFactory):
         output_length,
         dump_dir,
         use_cache=True,
-        master_data_dir=None,
         start_concept_id=0,
         is_chat_model=True,
         include_system_prompt=False,
@@ -393,17 +392,14 @@ class AxbenchDatasetFactory(BaseDatasetFactory):
             client,
             dump_dir,
             use_cache=use_cache,
-            master_data_dir=master_data_dir,
         )
         self.seed = kwargs.get("seed", 42)
         self.logger = kwargs.get("logger", logger)
 
-        # load seed sentences
-        self.seed_sentences = load_from_disk(
-            os.path.join(master_data_dir, "seed_sentences")
-        )
-        self.seed_instructions = load_from_disk(
-            os.path.join(master_data_dir, "seed_instructions")
+        # load seed sentences and instructions from HuggingFace
+        self.seed_sentences = load_dataset("hypersteer/seed_sentences", split="train")
+        self.seed_instructions = load_dataset(
+            "hypersteer/seed_instructions", split="train"
         )
         self.dataset_category = dataset_category
         self.overwrite_inference_data_dir = kwargs.get(
@@ -904,14 +900,12 @@ class AxbenchSteeringDatasetFactory(BaseSteeringDatasetFactory):
     def __init__(self, tokenizer, dump_dir, has_prompt_steering=False, **kwargs):
         super().__init__(**kwargs)
         self.tokenizer = tokenizer
-        self.master_data_dir = kwargs.get("master_data_dir", None)
         if kwargs.get("lm_client", None):
             self.lm_model = LanguageModel(
                 kwargs.get("lm_model", "gpt-4o-mini"),
                 kwargs["lm_client"],
                 dump_dir,
                 use_cache=True,
-                master_data_dir=self.master_data_dir,
             )
         self.has_prompt_steering = has_prompt_steering
 
@@ -975,14 +969,10 @@ class AxbenchSteeringDatasetFactory(BaseSteeringDatasetFactory):
                 )
                 return df
             elif dataset_name == "AlpacaEval":
-                # load alpaca eval dataset.
-                assert self.master_data_dir is not None, (
-                    "Master data dir is required for AlpacaEval."
-                )
-                alpaca_eval_path = os.path.join(
-                    self.master_data_dir, "alpaca_eval.json"
-                )
-                alpaca_eval_df = pd.read_json(alpaca_eval_path)
+                # load alpaca eval dataset from HuggingFace
+                alpaca_eval_df = load_dataset(
+                    "tatsu-lab/alpaca_eval", split="train"
+                ).to_pandas()
 
                 # get gpt-4o boosted steering prompts.
                 if self.has_prompt_steering:
@@ -1093,11 +1083,11 @@ class AxbenchSteeringDatasetFactory(BaseSteeringDatasetFactory):
                 or dataset_name == "AlpacaEval_Synergy"
             ):
                 # load alpaca eval dataset.
-                assert self.master_data_dir is not None, (
-                    "Master data dir is required for AlpacaEval."
+                assert self.lm_model is not None, (
+                    "Language model is required for AlpacaEval."
                 )
                 alpaca_eval_path = os.path.join(
-                    self.master_data_dir, "alpaca_eval.json"
+                    self.lm_model.dump_dir, "alpaca_eval.json"
                 )
                 alpaca_eval_df = pd.read_json(alpaca_eval_path)
                 common_steering_factors = steering_factors

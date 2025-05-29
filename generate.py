@@ -13,7 +13,6 @@ import json
 import os
 import pickle
 import random
-import sys
 from pathlib import Path
 
 import httpx
@@ -23,9 +22,9 @@ from openai import AsyncOpenAI
 from tqdm.auto import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, set_seed
 
+from hypersteer.data.dataset import DatasetFactory
 from hypersteer.utils.configs import DatasetArgs
 from hypersteer.utils.constants import *  # noqa: F403
-from hypersteer.data.dataset import DatasetFactory
 from hypersteer.utils.dry_run import patch_client
 from hypersteer.utils.helpers import get_logger
 

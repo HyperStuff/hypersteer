@@ -5,23 +5,25 @@ defaults:
   - base # Inherit from base experiment
   - _self_
 
+# Global debug mode
+debug: false
+
 train:
   lr: 8e-5
   epochs: 3
-  batch_size: 16
-  test_batch_size: 8
+  batch_size: 4
+  test_batch_size: 4
   gradient_accumulation_steps: 1
   n_steps: -1
   val_interval: 100
   checkpoint_per_step: null
-  debug: false
 
 model:
   use_selection_head: false
   selection_l1_loss_coeff: 1e-3
   use_selection_ln: false
   hypernet_type: "attn"
-  cross_attn_hidden_layers: 8
+  cross_attn_hidden_layers: 1
 
   mask_visualization:
     log_heatmap: false

@@ -1,31 +1,6 @@
 from abc import ABC, abstractmethod
 
 
-class ModelRegistry:
-    """Simple registry for model types"""
-
-    _models: dict[str, type["BaseModel"]] = {}
-
-    @classmethod
-    def register(cls, name: str, model_class: type["BaseModel"]):
-        """Register a model class"""
-        cls._models[name] = model_class
-
-    @classmethod
-    def get_model(cls, name: str) -> type["BaseModel"]:
-        """Get a registered model class"""
-        if name not in cls._models:
-            raise ValueError(
-                f"Unknown model type: {name}. Available: {list(cls._models.keys())}"
-            )
-        return cls._models[name]
-
-    @classmethod
-    def list_models(cls) -> list:
-        """List all registered model names"""
-        return list(cls._models.keys())
-
-
 class BaseModel(ABC):
     """Abstract base class for all models."""
 
@@ -103,13 +78,3 @@ class BaseModel(ABC):
     def on_batch_end(self, batch_idx, **kwargs):
         """Called at the end of each batch."""
         pass
-
-
-def register_model(name: str):
-    """Decorator to register a model"""
-
-    def decorator(cls):
-        ModelRegistry.register(name, cls)
-        return cls
-
-    return decorator

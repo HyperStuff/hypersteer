@@ -2,11 +2,23 @@ import hashlib
 import json
 import logging
 import os
+from contextlib import contextmanager
 from os import PathLike
 from pathlib import Path
 
 import torch
 import torch.distributed as dist
+
+
+@contextmanager
+def set_default_device(device):
+    """Context manager to temporarily set the default device for tensor creation."""
+    original_device = torch.get_default_device()
+    torch.set_default_device(device)
+    try:
+        yield
+    finally:
+        torch.set_default_device(original_device)
 
 
 class DistributedAwareLogger(logging.Logger):

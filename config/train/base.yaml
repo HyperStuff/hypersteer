@@ -23,7 +23,6 @@ train_on_negative: false
 negative_example_ratio: 1.0
 
 # Training environment
-debug: false
 debug_model: false
 save_dir: "assets/checkpoints"
 resume_from: null

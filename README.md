@@ -13,59 +13,11 @@ cd hypersteer
 uv sync
 ```
 
-### Hardware Options
-
-Choose one based on your setup:
-
-```bash
-# CPU only
-uv sync --extra cpu
-
-# CUDA 12.8
-uv sync --extra cu128
-
-# CUDA 12.8 nightly
-uv sync --extra cu128-nightly
-```
-
-### Optional Extras
-
-```bash
-# Development tools
-uv sync --extra dev
-
-# ReFT support
-uv sync --extra reft
-
-# Flash attention
-uv sync --extra flash-attn
-
-# Ray launcher
-uv sync --extra ray
-```
-
-## Usage
-
-```bash
-# Training
-uv run python train.py
-
-# Inference
-uv run python inference.py
-
-# Evaluation
-uv run python evaluate.py
-
-# Generation
-uv run python generate.py
-```
-
-Configuration via Hydra configs in `config/`.
-
 # TODO
 
+- faster initialization for big networks (pretty easy - just do on device)
 - better data management (Right now only axbench support, and we use the parquets commmitted to GH). Need to migrate to using just Huggingface datasets completely
-- Proper implementation of data generation
+- Proper implementation of data generation (TODO: jiuding)
 - robust distributed training support via FSDP and DDP
-- Fast Deepspeed inference kernels and revamped inference logic with distributed supprot
+- Fast Deepspeed inference kernels and revamped inference logic with distributed data parallel support
 - Liger kernel, FA2, etc. for faster training

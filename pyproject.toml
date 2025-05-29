@@ -33,8 +33,6 @@ dependencies = [
     "transformers==4.45.1",
     "adjusttext>=1.0.0",
     "optuna==4.3.0",
-    "torch>=2.7.0",
-    "torchvision>=0.22.0",
 ]
 
 [project.optional-dependencies]
@@ -42,7 +40,7 @@ dev = [
     "ipykernel>=6.25.0",
     "jupyter>=1.0.0",
     "pre-commit>=3.0.0",
-    "ai_commit @ git+https://github.com/sidnb13/ai_commit",
+    "ai_commit @ git+https://github.com/sidnb13/toolbox.git#subdirectory=src/ai_commit",
 ]
 
 reft = [
@@ -64,23 +62,3 @@ allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["hypersteer"]
-
-[tool.uv.sources]
-torch = [
-    { index = "pytorch-cpu", marker = "sys_platform != 'linux'" },
-    { index = "pytorch-cu128", marker = "sys_platform == 'linux'" },
-]
-torchvision = [
-    { index = "pytorch-cpu", marker = "sys_platform != 'linux'" },
-    { index = "pytorch-cu128", marker = "sys_platform == 'linux'" },
-]
-
-[[tool.uv.index]]
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/cpu"
-explicit = true
-
-[[tool.uv.index]]
-name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
-explicit = true

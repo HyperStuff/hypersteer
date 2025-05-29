@@ -1,7 +1,7 @@
 # Base configuration - uses existing config directories for defaults
 defaults:
   - _self_
-  - dataset: base
+  - dataset: axbench
   - model: base
   - train: base
   - inference: base
@@ -12,6 +12,8 @@ defaults:
   - experiment: null  # This will merge at root level when specified
   - override hydra/job_logging: colorlog
   - override hydra/hydra_logging: colorlog
+
+debug: false
 
 # Hydra configuration
 hydra:

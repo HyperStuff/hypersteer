@@ -102,6 +102,7 @@ class DatasetConfig(BaseConfigModel):
     cache_dir: str | Path | None = None
     seed: int = 42
     dump_dir: str | Path | None = None
+    train_dir: str | Path | None = None
     select_concept_ids: list[int] = Field(default_factory=list)
     held_out_eval: bool = False
     input_condition_concept: bool = False
@@ -341,6 +342,7 @@ class EvalArgs(BaseConfigModel):
 class ExperimentConfig(BaseConfigModel):
     """Main configuration that contains all sub-configurations"""
 
+    debug: bool = False
     generate: GenerateConfig = Field(default_factory=GenerateConfig)
     train: TrainingArgs = Field(default_factory=TrainingArgs)
     model: ModelConfig = Field(default_factory=ModelConfig)

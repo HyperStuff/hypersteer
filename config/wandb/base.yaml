@@ -1,10 +1,12 @@
-wandb:
-  log: true
-  log_code: true
-  project: ${oc.env:WANDB_PROJECT,null}
-  entity: ${oc.env:WANDB_ENTITY,null}
-  run_name: ${oc.env:WANDB_RUN_NAME,null}
-  run_id: ${oc.env:WANDB_RUN_ID,null}
-  group: ${oc.env:WANDB_GROUP,null}
-  tags: ${oc.env:WANDB_TAGS,null}
-  notes: ${oc.env:WANDB_NOTES,null} 
+defaults:
+  - _self_
+
+log: true
+log_code: true
+project: ${oc.env:WANDB_PROJECT,null}
+entity: ${oc.env:WANDB_ENTITY,null}
+run_name: ${oc.env:WANDB_RUN_NAME,null}
+run_id: ${oc.env:WANDB_RUN_ID,null}
+group: ${oc.env:WANDB_GROUP,null}
+tags: ${oc.env:WANDB_TAGS,null}
+notes: ${oc.env:WANDB_NOTES,null}

@@ -12,12 +12,12 @@ import optuna
 import pandas as pd
 import torch
 import torch.distributed as dist
-import wandb
 from omegaconf import DictConfig, OmegaConf
 from openai import AsyncOpenAI
 from optuna.samplers import TPESampler
 from transformers import AutoModelForCausalLM, AutoTokenizer, set_seed
 
+import wandb
 from evaluate import (
     combine_scores_per_concept,
     eval_steering,
@@ -1239,16 +1239,8 @@ def select_steering_factors(
 
 
 def run_inference(args: ExperimentConfig):
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-
-    # Dataset loading is now handled directly through HuggingFace dataset configuration
-    # No need for separate metadata directory handling
-
     # Set up dump dir
     original_dump_dir = Path(args.dataset.dump_dir)
-
     # Determine inference run directory logic
     if args.inference.infer_run:
         # If a custom infer_run value is provided, always use it
