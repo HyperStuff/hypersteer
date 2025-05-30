@@ -922,7 +922,7 @@ def run_eval(args: ExperimentConfig, infer_run="inference"):
         )
 
 
-@hydra.main(config_path="config", config_name="config", version_base=None)
+@hydra.main(config_path="../../config", config_name="config", version_base=None)
 def main(cfg: DictConfig):
     # Use experiment config if it exists, otherwise use the main config
     config = cfg.experiment if hasattr(cfg, "experiment") else cfg

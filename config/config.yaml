@@ -23,4 +23,4 @@ hydra:
       TOKENIZERS_PARALLELISM: false
 
 # Allow config overrides
-_target_: omegaconf.DictConfig
+_target_: omegaconf.DictConfi

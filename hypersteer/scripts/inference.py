@@ -11,22 +11,21 @@ import hydra
 import optuna
 import pandas as pd
 import torch
-import torch.distributed as dist
+import wandb
 from omegaconf import DictConfig, OmegaConf
 from openai import AsyncOpenAI
 from optuna.samplers import TPESampler
 from transformers import AutoModelForCausalLM, AutoTokenizer, set_seed
 
-import wandb
-from evaluate import (
+from hypersteer import get_model
+from hypersteer.data import get_steering_dataset_factory, get_training_dataset
+from hypersteer.scripts.evaluate import (
     combine_scores_per_concept,
     eval_steering,
     log_results_to_wandb,
     plot_steering,
     run_eval,
 )
-from hypersteer import get_model
-from hypersteer.data import get_steering_dataset_factory
 from hypersteer.utils.configs import (
     ExperimentConfig,
     InferenceConfig,
@@ -43,7 +42,6 @@ from hypersteer.utils.helpers import (
     barrier,
     combine_all_results,
     configure_tokenizer_model,
-    destroy_process_group,
     dump_json,
     get_and_set_device,
     get_cache_key,
@@ -111,7 +109,6 @@ def load_dataset_for_inference(args):
     """
     Load HuggingFace dataset for inference and extract concept information.
     """
-    from hypersteer.data import get_training_dataset
 
     # Load the dataset using the same function as training
     dataset = get_training_dataset(
@@ -122,6 +119,7 @@ def load_dataset_for_inference(args):
         cache_dir=args.dataset.cache_dir,
         select_concept_ids=args.dataset.select_concept_ids,
         max_concepts=args.dataset.max_concepts,
+        master_data_dir=args.inference.master_data_dir,
     )
 
     # Extract unique concept information from the dataset
@@ -487,10 +485,10 @@ def infer_steering(
                 model_name,
                 model=model_instance,
                 tokenizer=tokenizer,
-                low_rank_dimension=len(concept_info),
                 device=device,
                 training_args=model_config,
                 concept_ids=my_concept_ids,
+                model_config=model_config,
             )
             benchmark_model.load(
                 dump_dir=train_dir,
@@ -1275,12 +1273,6 @@ def run_inference(args: ExperimentConfig):
     )
     set_seed(args.dataset.seed)
 
-    # Initialize the process group
-    try:
-        dist.init_process_group(backend="nccl", init_method="env://")
-    except Exception as e:
-        logger.error(f"Failed to initialize distributed process group: {e}")
-
     # Get the rank and world_size from environment variables
     rank = get_rank()
     world_size = get_world_size()
@@ -1297,9 +1289,6 @@ def run_inference(args: ExperimentConfig):
         select_steering_factors(*_common_args, **_common_kwargs)
     else:
         infer_steering(*_common_args, **_common_kwargs)
-
-    # Finalize the process group
-    destroy_process_group()
 
     return infer_run
 
@@ -1319,7 +1308,7 @@ def clear_global_model():
         torch.cuda.empty_cache()
 
 
-@hydra.main(config_path="config", config_name="config", version_base=None)
+@hydra.main(config_path="../../config", config_name="config", version_base=None)
 def main(cfg: DictConfig):
     # Use experiment config if it exists, otherwise use the main config
     config = cfg.experiment if hasattr(cfg, "experiment") else cfg

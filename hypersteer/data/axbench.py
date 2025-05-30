@@ -897,7 +897,14 @@ async def get_steering_prompts(client, concepts):
 
 @register_factory("axbench_steering")
 class AxbenchSteeringDatasetFactory(BaseSteeringDatasetFactory):
-    def __init__(self, tokenizer, dump_dir, has_prompt_steering=False, **kwargs):
+    def __init__(
+        self,
+        tokenizer,
+        dump_dir,
+        has_prompt_steering=False,
+        master_data_dir=None,
+        **kwargs,
+    ):
         super().__init__(**kwargs)
         self.tokenizer = tokenizer
         if kwargs.get("lm_client", None):
@@ -906,6 +913,7 @@ class AxbenchSteeringDatasetFactory(BaseSteeringDatasetFactory):
                 kwargs["lm_client"],
                 dump_dir,
                 use_cache=True,
+                master_data_dir=master_data_dir,
             )
         self.has_prompt_steering = has_prompt_steering
 
@@ -971,7 +979,7 @@ class AxbenchSteeringDatasetFactory(BaseSteeringDatasetFactory):
             elif dataset_name == "AlpacaEval":
                 # load alpaca eval dataset from HuggingFace
                 alpaca_eval_df = load_dataset(
-                    "tatsu-lab/alpaca_eval", split="train"
+                    "tatsu-lab/alpaca_eval", split="eval", trust_remote_code=True
                 ).to_pandas()
 
                 # get gpt-4o boosted steering prompts.

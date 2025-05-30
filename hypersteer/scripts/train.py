@@ -7,14 +7,15 @@ from pathlib import Path
 
 import hydra
 import torch
+import wandb
 from dotenv import load_dotenv
 from omegaconf import DictConfig, OmegaConf
 from transformers import AutoModelForCausalLM, AutoTokenizer, set_seed
 
-import wandb
-from evaluate import run_eval
 from hypersteer import get_model
 from hypersteer.data import get_training_dataset
+from hypersteer.scripts.evaluate import run_eval
+from hypersteer.scripts.inference import run_inference
 from hypersteer.training import Trainer
 from hypersteer.utils.configs import ExperimentConfig, config_to_pydantic
 from hypersteer.utils.helpers import (
@@ -22,13 +23,12 @@ from hypersteer.utils.helpers import (
     destroy_process_group,
     get_logger,
 )
-from inference import run_inference
 
 # Initialize the logger
 logger = get_logger(__name__)
 
 
-@hydra.main(config_path="config", config_name="config", version_base=None)
+@hydra.main(config_path="../../config", config_name="config", version_base=None)
 def main(cfg: DictConfig):
     # Use experiment config if it exists, otherwise use the main config
     config = cfg.experiment if hasattr(cfg, "experiment") else cfg
