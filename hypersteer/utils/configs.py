@@ -86,6 +86,10 @@ class WandbConfig(BaseConfigModel):
 class DatasetConfig(BaseConfigModel):
     """Dataset arguments"""
 
+    # Top-level select_concept_ids for the dataset (applies globally if not overridden)
+    select_concept_ids: list[int] = Field(default_factory=list)
+
+    # Core dataset parameters (for backward compatibility and as defaults)
     dataset_name: str | None = None
     dataset_category: str = "instruction"
     dataset_split: str = "train"
@@ -100,13 +104,11 @@ class DatasetConfig(BaseConfigModel):
     select_column: str = "prompt"
     response_column: str = "completion"
     cache_dir: str | Path | None = None
-    seed: int = 42
-    dump_dir: str | Path | None = None
     train_dir: str | Path | None = None
-    select_concept_ids: list[int] = Field(default_factory=list)
     held_out_eval: bool = False
     input_condition_concept: bool = False
     max_seq_length: int | None = None
+    use_split: bool = False
 
     # HuggingFace dataset configuration
     hf_dataset_name: str | None = None
@@ -124,6 +126,23 @@ class DatasetConfig(BaseConfigModel):
     hf_ignore_verifications: bool = False
     hf_save_infos: bool = False
     hf_trust_remote_code: bool = False
+
+    # Train and eval sub-configs (override defaults above if specified)
+    train: "DatasetConfig" = None
+    eval: "DatasetConfig" = None
+
+    # For pydantic self-referencing
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    def __init__(self, **data):
+        # Allow train/eval to be dicts or DatasetConfig
+        train = data.pop("train", None)
+        eval_ = data.pop("eval", None)
+        super().__init__(**data)
+        if train is not None:
+            self.train = DatasetConfig(**train) if isinstance(train, dict) else train
+        if eval_ is not None:
+            self.eval = DatasetConfig(**eval_) if isinstance(eval_, dict) else eval_
 
 
 class FactorSelectionConfig(BaseConfigModel):
@@ -343,6 +362,8 @@ class ExperimentConfig(BaseConfigModel):
     """Main configuration that contains all sub-configurations"""
 
     debug: bool = False
+    seed: int = 42
+    dump_dir: str | Path | None = None
     generate: GenerateConfig = Field(default_factory=GenerateConfig)
     train: TrainingArgs = Field(default_factory=TrainingArgs)
     model: ModelConfig = Field(default_factory=ModelConfig)

@@ -34,8 +34,8 @@ def main(cfg: DictConfig):
     config = cfg.experiment if hasattr(cfg, "experiment") else cfg
 
     # Handle pretrained config merging if needed
-    if config.dataset.dump_dir:
-        pretrained_cfg_path = Path(config.dataset.dump_dir) / "config.yaml"
+    if config.dump_dir:
+        pretrained_cfg_path = Path(config.dump_dir) / "config.yaml"
         if pretrained_cfg_path.exists():
             logger.info(f"Loading pretrained config from {pretrained_cfg_path}")
             pretrained_cfg = OmegaConf.load(pretrained_cfg_path)
@@ -49,12 +49,12 @@ def main(cfg: DictConfig):
     logger.debug(f"Using device {device}")
 
     # Set a unique seed per rank for reproducibility
-    set_seed(args.dataset.seed)
+    set_seed(args.seed)
 
     run_name = datetime.now().strftime("train_%Y%m%d_%H%M%S%f")
-    if not args.dataset.dump_dir and not args.debug:
-        args.dataset.dump_dir = Path(args.train.save_dir) / run_name
-        (args.dataset.dump_dir / "train").mkdir(parents=True, exist_ok=True)
+    if not args.dump_dir and not args.debug:
+        args.dump_dir = Path(args.train.save_dir) / run_name
+        (args.dump_dir / "train").mkdir(parents=True, exist_ok=True)
 
     # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(
@@ -75,27 +75,27 @@ def main(cfg: DictConfig):
 
     configure_tokenizer_model(model_instance, tokenizer)
 
+    # Use train config for training dataset
     training_dataset = get_training_dataset(
         dataset_type="axbench",
-        dataset_name=args.dataset.hf_dataset_name,
-        data_files=args.dataset.hf_data_files,
-        split=args.dataset.hf_split,
-        cache_dir=args.dataset.cache_dir,
+        dataset_name=args.dataset.train.hf_dataset_name,
+        data_files=args.dataset.train.hf_data_files,
+        split=args.dataset.train.hf_split,
+        cache_dir=args.dataset.train.cache_dir,
         tokenizer=tokenizer,
         model_name=args.model.target_model_name,
         binarize=args.train.binarize_dataset,
         train_on_negative=args.train.train_on_negative,
         output_length=args.inference.output_length,
-        max_num_of_examples=args.dataset.num_of_examples,
+        max_num_of_examples=args.dataset.train.num_of_examples,
         negative_example_ratio=args.train.negative_example_ratio,
         replace_negative_description=True,
-        select_concept_ids=args.dataset.select_concept_ids,
-        max_concepts=args.dataset.max_concepts,
+        select_concept_ids=args.dataset.train.select_concept_ids,
+        max_concepts=args.dataset.train.max_concepts,
     )
 
     logger.info(f"Loaded and processed dataset with {len(training_dataset)} examples")
 
-    # Convert to pandas for compatibility with existing model code
     combined_df = training_dataset.to_pandas()
 
     # Get concept IDs from the dataset
@@ -105,7 +105,7 @@ def main(cfg: DictConfig):
     if not args.debug:
         OmegaConf.save(
             OmegaConf.create(args.model_dump()),
-            args.dataset.dump_dir / "config.yaml",
+            args.dump_dir / "config.yaml",
         )
 
     # Training logic
@@ -120,9 +120,9 @@ def main(cfg: DictConfig):
 
     # Create in-train dev set
     dev_size = (
-        int(args.dataset.dev_size * len(combined_df))
-        if 0 < args.dataset.dev_size < 1
-        else min(int(args.dataset.dev_size), len(combined_df) // 5)
+        int(args.dataset.train.dev_size * len(combined_df))
+        if 0 < args.dataset.train.dev_size < 1
+        else min(int(args.dataset.train.dev_size), len(combined_df) // 5)
     )
 
     # Shuffle the dataframe before splitting
@@ -148,7 +148,7 @@ def main(cfg: DictConfig):
         wandb_config=args.wandb,
         device=device,
         seed=training_args.seed,
-        dump_dir=args.dataset.dump_dir / "train" if args.dataset.dump_dir else None,
+        dump_dir=args.dump_dir / "train" if args.dump_dir else None,
     )
 
     benchmark_model.make_model(
@@ -202,7 +202,7 @@ def main(cfg: DictConfig):
     # Save model
     if not args.debug:
         benchmark_model.save(
-            args.dataset.dump_dir / "train", model_name=model_config.model_name
+            args.dump_dir / "train", model_name=model_config.model_name
         )
         logger.debug(f"Saved weights for model {model_config.model_name}")
 

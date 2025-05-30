@@ -39,7 +39,6 @@ from hypersteer.utils.constants import (
 )
 from hypersteer.utils.dry_run import patch_client
 from hypersteer.utils.helpers import (
-    barrier,
     combine_all_results,
     configure_tokenizer_model,
     dump_json,
@@ -105,7 +104,7 @@ def load_config(config_path):
     return d
 
 
-def load_dataset_for_inference(args):
+def load_dataset_for_inference(args: ExperimentConfig):
     """
     Load HuggingFace dataset for inference and extract concept information.
     """
@@ -113,13 +112,13 @@ def load_dataset_for_inference(args):
     # Load the dataset using the same function as training
     dataset = get_training_dataset(
         dataset_type="axbench",
-        dataset_name=args.dataset.hf_dataset_name,
-        data_files=args.dataset.hf_data_files,
-        split=args.dataset.hf_split,
-        cache_dir=args.dataset.cache_dir,
-        select_concept_ids=args.dataset.select_concept_ids,
-        max_concepts=args.dataset.max_concepts,
-        master_data_dir=args.inference.master_data_dir,
+        dataset_name=args.dataset.eval.hf_dataset_name,
+        data_files=args.dataset.eval.hf_data_files,
+        split=args.dataset.eval.hf_split,
+        cache_dir=args.dataset.eval.cache_dir,
+        select_concept_ids=args.dataset.eval.select_concept_ids,
+        max_concepts=args.dataset.eval.max_concepts,
+        master_data_dir=args.dataset.master_data_dir,
     )
 
     # Extract unique concept information from the dataset
@@ -284,7 +283,7 @@ def infer_steering(
     infer_run="inference",
 ):
     train_dir = args.dataset.train_dir
-    dump_dir = args.dataset.dump_dir
+    dump_dir = args.dump_dir
     num_of_examples = args.inference.steering_num_of_examples
     concept_info = load_dataset_for_inference(args)
     steering_factors = args.inference.steering_factors
@@ -508,7 +507,7 @@ def infer_steering(
                 combined_df,
                 batch_size=args.inference.steering_batch_size,
                 prefix_length=prefix_length,
-                dump_dir=Path(args.dataset.dump_dir) / infer_run,
+                dump_dir=Path(args.dump_dir) / infer_run,
                 concept_id=my_concept_ids,  # Pass all concept IDs for batch processing
                 eval_output_length=args.inference.steering_output_length,
                 temperature=args.inference.temperature,
@@ -564,7 +563,7 @@ def infer_steering(
                     concept_id=concept_id,
                     sae_link=sae_link,
                     sae_id=sae_id,
-                    dump_dir=Path(args.dataset.dump_dir) / infer_run,
+                    dump_dir=Path(args.dump_dir) / infer_run,
                     batch_size=args.inference.steering_batch_size,
                     eval_output_length=args.inference.steering_output_length,
                     temperature=args.inference.temperature,
@@ -593,14 +592,11 @@ def infer_steering(
             by=["concept_id", "input_id", "factor"]
         ).reset_index(drop=True)
         combined_df.to_parquet(
-            Path(dump_dir) / infer_run / "steering_data.parquet", engine="pyarrow"
+            Path(args.dump_dir) / infer_run / "steering_data.parquet", engine="pyarrow"
         )
         logger.info(
-            f"Saved steering inference results to {Path(dump_dir) / infer_run / 'steering_data.parquet'}"
+            f"Saved steering inference results to {Path(args.dump_dir) / infer_run / 'steering_data.parquet'}"
         )
-
-    # Synchronize all processes
-    barrier()
 
 
 def select_steering_factors(
@@ -612,7 +608,7 @@ def select_steering_factors(
     logger.info("Starting steering factor selection with Optuna TPE optimizer")
     logger.info("=" * 80)
 
-    dump_dir = Path(args.dataset.dump_dir)
+    dump_dir = Path(args.dump_dir)
     concept_info = load_dataset_for_inference(args)
 
     # Make eval run dir
@@ -1238,7 +1234,7 @@ def select_steering_factors(
 
 def run_inference(args: ExperimentConfig):
     # Set up dump dir
-    original_dump_dir = Path(args.dataset.dump_dir)
+    original_dump_dir = Path(args.dump_dir)
     # Determine inference run directory logic
     if args.inference.infer_run:
         # If a custom infer_run value is provided, always use it
@@ -1271,7 +1267,7 @@ def run_inference(args: ExperimentConfig):
     logger.info(
         f"Inferencing with following configuration:\n{dump_json(args.inference.model_dump(), indent=4)}"
     )
-    set_seed(args.dataset.seed)
+    set_seed(args.seed)
 
     # Get the rank and world_size from environment variables
     rank = get_rank()
@@ -1314,8 +1310,8 @@ def main(cfg: DictConfig):
     config = cfg.experiment if hasattr(cfg, "experiment") else cfg
 
     # Handle pretrained config merging if needed
-    if hasattr(config, "dataset") and config.dataset.dump_dir:
-        pretrained_cfg_path = Path(config.dataset.dump_dir) / "config.yaml"
+    if config.dump_dir:
+        pretrained_cfg_path = Path(config.dump_dir) / "config.yaml"
         if pretrained_cfg_path.exists():
             logger.info(f"Loading pretrained config from {pretrained_cfg_path}")
             pretrained_cfg = OmegaConf.load(pretrained_cfg_path)

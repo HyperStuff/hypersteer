@@ -313,7 +313,7 @@ def get_training_dataset(
     dataset = load_dataset(
         dataset_name,
         data_files=data_files,
-        split=split,
+        split=split if kwargs.get("use_split", False) else "train",
         cache_dir=cache_dir,
     )
 

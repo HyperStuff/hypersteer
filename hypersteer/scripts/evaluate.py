@@ -435,11 +435,11 @@ def eval_steering(
     """
     Evaluate steering performance using multi-processing for all tasks
     """
-    dump_dir = args.dataset.dump_dir
+    dump_dir = args.dump_dir
 
     # Initialize data generator
     df_generator = data_generator(
-        args.dataset.dump_dir,
+        args.dump_dir,
         mode="steering",
         winrate_split_ratio=args.evaluate.winrate_split_ratio,
         infer_run=infer_run,
@@ -447,7 +447,7 @@ def eval_steering(
 
     # Load previous state if exists
     state = (
-        load_state(args.dataset.dump_dir, mode="steering", eval_run=eval_run)
+        load_state(args.dump_dir, mode="steering", eval_run=eval_run)
         if not getattr(args, "ignore_steering_state", False)
         else None
     )
@@ -478,7 +478,7 @@ def eval_steering(
                     current_df,
                     evaluator_name,
                     model_name,
-                    args.dataset.dump_dir,
+                    args.dump_dir,
                     args.evaluate.lm_model,
                     args.evaluate.winrate_baseline,
                     {},
@@ -617,7 +617,7 @@ def eval_steering(
             logger.warning("Generating winrate plot...")
             plot_win_rates(
                 aggregated_results,
-                Path(args.dataset.dump_dir) / eval_run,
+                Path(args.dump_dir) / eval_run,
                 args.evaluate.report_to,
                 args.wandb.run_name,
             )
@@ -859,7 +859,7 @@ def run_eval(args: ExperimentConfig, infer_run="inference"):
         # Otherwise, use the default "evaluate" directory
         eval_run = "evaluate"
 
-    eval_dump_dir = Path(args.dataset.dump_dir) / eval_run
+    eval_dump_dir = Path(args.dump_dir) / eval_run
     if (
         not args.evaluate.overwrite_existing_eval
         and eval_dump_dir.exists()
@@ -890,7 +890,7 @@ def run_eval(args: ExperimentConfig, infer_run="inference"):
     eval_steering(args, eval_run=eval_run, infer_run=infer_run)
 
     # Log metadata about the factor selection run to help with traceability
-    metadata_path = Path(args.dataset.dump_dir) / eval_run / "eval_metadata.json"
+    metadata_path = Path(args.dump_dir) / eval_run / "eval_metadata.json"
     metadata = {
         "timestamp": datetime.datetime.now().isoformat(),
         "infer_run": str(infer_run),
@@ -914,7 +914,7 @@ def run_eval(args: ExperimentConfig, infer_run="inference"):
             concept_info = None
 
         log_results_to_wandb(
-            dump_dir=args.dataset.dump_dir,
+            dump_dir=args.dump_dir,
             eval_run=eval_run,
             infer_run=infer_run,
             concept_info=concept_info,
@@ -928,12 +928,11 @@ def main(cfg: DictConfig):
     config = cfg.experiment if hasattr(cfg, "experiment") else cfg
 
     # Handle pretrained config merging if needed
-    if hasattr(config, "dataset") and config.dataset.dump_dir:
-        pretrained_cfg_path = Path(config.dataset.dump_dir) / "config.yaml"
-        if pretrained_cfg_path.exists():
-            logger.info(f"Loading pretrained config from {pretrained_cfg_path}")
-            pretrained_cfg = OmegaConf.load(pretrained_cfg_path)
-            config = OmegaConf.merge(pretrained_cfg, config)
+    pretrained_cfg_path = Path(config.dump_dir) / "config.yaml"
+    if pretrained_cfg_path.exists():
+        logger.info(f"Loading pretrained config from {pretrained_cfg_path}")
+        pretrained_cfg = OmegaConf.load(pretrained_cfg_path)
+        config = OmegaConf.merge(pretrained_cfg, config)
 
     config = config_to_pydantic(config, ExperimentConfig)
     run_eval(config, infer_run=config.evaluate.infer_run or "inference")

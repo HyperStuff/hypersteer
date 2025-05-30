@@ -2,13 +2,25 @@ defaults:
   - base
 
 # AxBench-specific overrides
-dataset_category: "instruction"
-max_concepts: 100
-num_of_examples: -1
-cache_dir: "assets/cache"
-
-# HuggingFace dataset configuration
-hf_dataset_name: "pyvene/axbench-concept500"
-hf_data_files:
-  train: "2b/l10/train/data.parquet"
-hf_split: "train"
+train:
+  dataset_category: "instruction"
+  max_concepts: 100
+  num_of_examples: -1
+  cache_dir: "assets/cache"
+  hf_dataset_name: "pyvene/axbench-concept500"
+  hf_data_files:
+    train: "2b/l10/train/data.parquet"
+  hf_split: "train"
+  select_concept_ids: []
+  use_split: false
+eval:
+  dataset_category: "instruction"
+  max_concepts: 100
+  num_of_examples: -1
+  cache_dir: "assets/cache"
+  hf_dataset_name: "pyvene/axbench-concept10"
+  hf_data_files:
+    train: "2b/l10/train/data.parquet"
+  hf_split: "eval"
+  select_concept_ids: []
+  use_split: false
