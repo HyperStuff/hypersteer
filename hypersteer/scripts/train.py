@@ -86,7 +86,7 @@ def main(cfg: DictConfig):
         model_name=args.model.target_model_name,
         binarize=args.train.binarize_dataset,
         train_on_negative=args.train.train_on_negative,
-        output_length=args.inference.output_length,
+        output_length=args.inference.steering_output_length,
         max_num_of_examples=args.dataset.train.num_of_examples,
         negative_example_ratio=args.train.negative_example_ratio,
         replace_negative_description=True,
@@ -223,5 +223,5 @@ def main(cfg: DictConfig):
 
 if __name__ == "__main__":
     torch.autograd.set_detect_anomaly(True)
-    load_dotenv()
+    load_dotenv(override=True)
     main()

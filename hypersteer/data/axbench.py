@@ -338,7 +338,9 @@ def get_training_dataset(
         dataset = dataset.filter(
             lambda x: x["concept_id"] in limited_concept_ids, num_proc=4
         )
-        logger.info(f"Limited to {max_concepts} concepts with {len(dataset)} examples")
+        logger.info(
+            f"Limited to {len(limited_concept_ids)} concepts with {len(dataset)} examples"
+        )
 
     # Process dataset for training
     if tokenizer is not None and model_name is not None:

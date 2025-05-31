@@ -12,13 +12,16 @@ import optuna
 import pandas as pd
 import torch
 import wandb
+from dotenv import load_dotenv
 from omegaconf import DictConfig, OmegaConf
 from openai import AsyncOpenAI
 from optuna.samplers import TPESampler
+from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, set_seed
 
 from hypersteer import get_model
 from hypersteer.data import get_steering_dataset_factory, get_training_dataset
+from hypersteer.models.model import Model
 from hypersteer.scripts.evaluate import (
     combine_scores_per_concept,
     eval_steering,
@@ -31,12 +34,7 @@ from hypersteer.utils.configs import (
     InferenceConfig,
     config_to_pydantic,
 )
-from hypersteer.utils.constants import *  # noqa: F403
-from hypersteer.utils.constants import (
-    CONFIG_FILE,
-    HYPERNETWORK_MODELS,
-    STEERING_EXCLUDE_MODELS,
-)
+from hypersteer.utils.constants import CHAT_MODELS, CONFIG_FILE
 from hypersteer.utils.dry_run import patch_client
 from hypersteer.utils.helpers import (
     combine_all_results,
@@ -49,6 +47,7 @@ from hypersteer.utils.helpers import (
     get_world_size,
 )
 from hypersteer.utils.model_utils import get_prefix_length, get_suffix_length
+from hypersteer.utils.patch import monkeypatch_ax_model_generate
 
 # Initialize the logger
 logger = get_logger(__name__)
@@ -212,7 +211,7 @@ def prepare_df(current_df, tokenizer, is_chat_model, model_name):
     return current_df
 
 
-def run_steering_inference(model, examples, **kwargs):
+def run_steering_inference(model: Model, examples: pd.DataFrame, **kwargs):
     """
     Generic inference function that works with any model's predict_step method.
 
@@ -224,18 +223,18 @@ def run_steering_inference(model, examples, **kwargs):
     Returns:
         Dictionary with aggregated results from all batches
     """
-    import gc
-
-    from tqdm import tqdm
 
     # Setup
     model.tokenizer.padding_side = "left"
     batch_size = kwargs.get("batch_size", 64)
 
+    if hasattr(model, "ax_model"):
+        model.ax_model = monkeypatch_ax_model_generate(model.ax_model)
+        model.ax.eval()
+
     # Initialize result containers
     all_generations = []
     all_perplexities = []
-    all_strengths = []
     all_steering_vectors = []
 
     total_batches = (len(examples) + batch_size - 1) // batch_size
@@ -258,7 +257,6 @@ def run_steering_inference(model, examples, **kwargs):
             # Aggregate results
             all_generations.extend(batch_results.get("generations", []))
             all_perplexities.extend(batch_results.get("perplexities", []))
-            all_strengths.extend(batch_results.get("strengths", []))
             all_steering_vectors.extend(batch_results.get("steering_vectors", []))
 
             # Memory cleanup
@@ -266,12 +264,14 @@ def run_steering_inference(model, examples, **kwargs):
             gc.collect()
             torch.cuda.empty_cache()
 
-    return {
-        "steered_generation": all_generations,
-        "perplexity": all_perplexities,
-        "strength": all_strengths,
-        "steering_vector": all_steering_vectors,
-    }
+    results = {}
+    if all_generations:
+        results["steered_generation"] = all_generations
+    if all_perplexities:
+        results["perplexity"] = all_perplexities
+    if all_steering_vectors:
+        results["steering_vector"] = all_steering_vectors
+    return results
 
 
 def infer_steering(
@@ -372,7 +372,6 @@ def infer_steering(
 
     if tokenizer.unk_token is None and tokenizer.pad_token is None:
         # raw llama3
-        print("adding a special padding token...")
         tokenizer.add_special_tokens({"pad_token": "[PAD]"})
         need_resize = True
     else:
@@ -447,21 +446,6 @@ def infer_steering(
 
     logger.info(f"Running inference on models: {models_to_run}")
 
-    # Check if any models are excluded from steering
-    valid_models = [
-        model for model in models_to_run if model not in STEERING_EXCLUDE_MODELS
-    ]
-    excluded_models = [
-        model for model in models_to_run if model in STEERING_EXCLUDE_MODELS
-    ]
-
-    if excluded_models:
-        logger.warning(f"Models {excluded_models} are excluded from steering, skipping")
-
-    if not valid_models:
-        logger.warning("No valid models to run inference on, exiting")
-        return
-
     # Create combined DataFrame for all concepts
     logger.debug("Preparing combined DataFrame for batch inference")
     combined_dfs = []
@@ -471,120 +455,49 @@ def infer_steering(
     combined_df = pd.concat(combined_dfs, ignore_index=True)
 
     # Run inference for each model using full batch inference
-    for model_name in valid_models:
-        logger.info(f"Running batch inference for model: {model_name}")
+    for model_name in models_to_run:
+        logger.info(f"Loading {model_name} on {device} for inference.")
 
-        # Both PromptSteering and Hypersteer models support full batch inference
-        if model_name in HYPERNETWORK_MODELS or model_name == "PromptSteering":
-            logger.info(f"Loading {model_name} on {device} for full batch inference.")
+        model_config = args.model
 
-            model_config = args.model
+        benchmark_model = get_model(
+            model_name,
+            model=model_instance,
+            tokenizer=tokenizer,
+            device=device,
+            training_args=model_config,
+            concept_ids=my_concept_ids,
+            model_config=model_config,
+        )
+        benchmark_model.load(
+            dump_dir=train_dir,
+            mode="steering",
+        )
+        benchmark_model.to(device)
+        if hasattr(benchmark_model, "ax"):
+            benchmark_model.ax.eval()
+            benchmark_model.ax.to(torch.bfloat16)
 
-            benchmark_model = get_model(
-                model_name,
-                model=model_instance,
-                tokenizer=tokenizer,
-                device=device,
-                training_args=model_config,
-                concept_ids=my_concept_ids,
-                model_config=model_config,
-            )
-            benchmark_model.load(
-                dump_dir=train_dir,
-                mode="steering",
-            )
-            benchmark_model.to(device)
-            if hasattr(benchmark_model, "ax"):
-                benchmark_model.ax.eval()
-                benchmark_model.ax.to(torch.bfloat16)
+        # Run full inference on all concepts at once
+        logger.info(f"Running batch inference on {len(my_concept_ids)} concepts")
+        results = run_steering_inference(
+            benchmark_model,
+            combined_df,
+            batch_size=args.inference.steering_batch_size,
+            prefix_length=prefix_length,
+            dump_dir=Path(args.dump_dir) / infer_run,
+            concept_id=my_concept_ids,  # Pass all concept IDs for batch processing
+            eval_output_length=args.inference.steering_output_length,
+            temperature=args.inference.temperature,
+            use_synergy=getattr(model_config, "use_synergy", False),
+        )
 
-            # Run full batch inference on all concepts at once
-            logger.info(
-                f"Running full batch inference on {len(my_concept_ids)} concepts"
-            )
-            results = run_steering_inference(
-                benchmark_model,
-                combined_df,
-                batch_size=args.inference.steering_batch_size,
-                prefix_length=prefix_length,
-                dump_dir=Path(args.dump_dir) / infer_run,
-                concept_id=my_concept_ids,  # Pass all concept IDs for batch processing
-                eval_output_length=args.inference.steering_output_length,
-                temperature=args.inference.temperature,
-                use_synergy=getattr(model_config, "use_synergy", False),
-                disable_neuronpedia_max_act=args.inference.disable_neuronpedia_max_act,
-            )
+        # Store the results in combined_df
+        for k, v in results.items():
+            combined_df[f"{model_name}_{k}"] = v
 
-            # Store the results in combined_df
-            for k, v in results.items():
-                combined_df[f"{model_name}_{k}"] = v
-
-            del benchmark_model
-            torch.cuda.empty_cache()
-        else:
-            # Fallback for models that don't support batch inference (should be rare)
-            logger.warning(
-                f"Model {model_name} does not support batch inference, using individual concept processing."
-            )
-
-            for concept_id in my_concept_ids:
-                current_df, sae_link, sae_id = data_per_concept[concept_id]
-                model_config = args.model
-
-                benchmark_model = get_model(
-                    model_name,
-                    model=model_instance,
-                    tokenizer=tokenizer,
-                    training_args=model_config,
-                    low_rank_dimension=len(concept_info),
-                    device=device,
-                )
-                benchmark_model.load(
-                    dump_dir=train_dir,
-                    sae_path=concept_info[0]["ref"],
-                    mode="steering",
-                    intervention_type=args.inference.steering_intervention_type,
-                    concept_id=concept_id,
-                    concept_ids=my_concept_ids,
-                )
-                benchmark_model.to(device)
-                if hasattr(benchmark_model, "ax") and args.inference.use_bf16:
-                    benchmark_model.ax.eval()
-                    benchmark_model.ax.to(torch.bfloat16)
-
-                logger.info(
-                    f"Inference steering with {model_name} on {device} for concept {concept_id}."
-                )
-
-                # Run prediction
-                results = run_steering_inference(
-                    benchmark_model,
-                    current_df,
-                    concept_id=concept_id,
-                    sae_link=sae_link,
-                    sae_id=sae_id,
-                    dump_dir=Path(args.dump_dir) / infer_run,
-                    batch_size=args.inference.steering_batch_size,
-                    eval_output_length=args.inference.steering_output_length,
-                    temperature=args.inference.temperature,
-                    prefix_length=prefix_length,
-                    positions=model_config.intervention_positions
-                    if model_name not in {"PromptSteering", "GemmaScopeSAE"}
-                    else None,
-                    use_synergy=getattr(model_config, "use_synergy", False),
-                    disable_neuronpedia_max_act=args.inference.disable_neuronpedia_max_act,
-                )
-                # Store the results in current_df and update combined_df
-                for k, v in results.items():
-                    current_df[f"{model_name}_{k}"] = v
-
-                # Update the corresponding rows in combined_df
-                concept_mask = combined_df["concept_id"] == concept_id
-                for k, v in results.items():
-                    combined_df.loc[concept_mask, f"{model_name}_{k}"] = v
-
-                del benchmark_model
-                torch.cuda.empty_cache()
+        del benchmark_model
+        torch.cuda.empty_cache()
 
     # Save results only on rank 0 (assuming distributed inference will be implemented properly in the future)
     if rank == 0:
@@ -1325,4 +1238,5 @@ def main(cfg: DictConfig):
 
 
 if __name__ == "__main__":
+    load_dotenv(override=True)
     main()

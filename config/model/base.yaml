@@ -22,7 +22,6 @@ exclude_bos: true
 special_tokens: []
 
 # Model-specific features
-use_synergy: false
 use_selection_head: false
 use_selection_ln: true
 include_sentence_in_embedding: false

@@ -9,8 +9,9 @@ import torch
 import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.nn.utils
+import wandb
 from pyvene import IntervenableConfig, IntervenableModel
+from safetensors.torch import load_file, save_file
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from transformers import (
@@ -19,7 +20,6 @@ from transformers import (
     AutoTokenizer,
 )
 
-import wandb
 from hypersteer.data.utils import get_batch_locs, make_data_module
 from hypersteer.training import TrainerMixin
 from hypersteer.utils.debug_utils import debug_print
@@ -29,7 +29,6 @@ from hypersteer.utils.helpers import (
     set_default_device,
 )
 from hypersteer.utils.model_utils import calculate_perplexity
-from hypersteer.utils.patch import monkeypatch_ax_model_generate
 from hypersteer.utils.visualization import Visualizer
 
 from .hypernet.configuration_hypernet import HypernetConfig
@@ -529,12 +528,6 @@ class HyperSteer(Model, TrainerMixin):
             log_to_console=False,
         )
 
-    @torch.no_grad()
-    def predict_latent(self, examples, **kwargs):
-        raise NotImplementedError(
-            "predict_latent is not implemented. Latent logic has been removed."
-        )
-
     def _extract_concept_metadata_from_dataset(self, examples):
         """Extract concept ID to concept text mapping from the dataset."""
         concept_id_to_text = {}
@@ -599,32 +592,32 @@ class HyperSteer(Model, TrainerMixin):
 
     def save(self, dump_dir, **kwargs):
         model_name = kwargs.get("model_name", self.__str__())
-        weight_file = os.path.join(dump_dir, f"{model_name}_weight.pt")
-        weight = self.concept_embedding.cpu()
-        torch.save(weight, weight_file)
+        weight_file = os.path.join(dump_dir, f"{model_name}_weight.safetensors")
+        self.concept_embedding.cpu()
+        save_file(self.concept_embedding.state_dict(), weight_file)
 
         # Save token selection (sparse_selection) if enabled
         if hasattr(self.ax, "selection_head") and self.model_config.use_selection_head:
-            path = os.path.join(dump_dir, f"{model_name}_selection_head.pt")
-            torch.save(self.ax.selection_head.state_dict(), path)
+            path = os.path.join(dump_dir, f"{model_name}_selection_head.safetensors")
+            save_file(self.ax.selection_head.state_dict(), path)
             logger.debug(f"Saved selection head to {path}")
 
     def load(self, dump_dir=None, **kwargs):
         model_name = kwargs.get("model_name", self.__str__())
-        weight_file = os.path.join(dump_dir, f"{model_name}_weight.pt")
+        weight_file = os.path.join(dump_dir, f"{model_name}_weight.safetensors")
         self.make_model(**kwargs)
 
-        del self.concept_embedding
-        self.concept_embedding = torch.load(
-            weight_file, map_location=self.device, weights_only=False
+        self.concept_embedding.load_state_dict(
+            load_file(weight_file, device=str(self.device))
         )
+        self.concept_embedding.to(self.device)
 
         # Load token selection (sparse_selection) if enabled and file exists
         if self.model_config.use_selection_head and hasattr(self.ax, "selection_head"):
-            path = os.path.join(dump_dir, f"{model_name}_selection_head.pt")
+            path = os.path.join(dump_dir, f"{model_name}_selection_head.safetensors")
             if os.path.exists(path):
                 self.ax.selection_head.load_state_dict(
-                    torch.load(path, map_location=self.device)
+                    load_file(path, device=str(self.device))
                 )
                 logger.debug(f"Loaded selection head from {path}")
 
@@ -670,39 +663,9 @@ class HyperSteer(Model, TrainerMixin):
 
         return top_logits, neg_logits
 
-    @torch.no_grad()
-    def predict_steer(self, examples, **kwargs):
-        """Use the generic inference function."""
-        self.ax_model = monkeypatch_ax_model_generate(self.ax_model)
-        self.ax.eval()
-
-        # Import the generic inference function from the root directory
-        import importlib.util
-        import os
-
-        # Get the path to inference.py in the root directory
-        root_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-        inference_path = os.path.join(root_dir, "inference.py")
-
-        # Load the module dynamically
-        spec = importlib.util.spec_from_file_location("inference", inference_path)
-        inference_module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(inference_module)
-
-        run_steering_inference = inference_module.run_steering_inference
-
-        return run_steering_inference(self, examples, **kwargs)
-
     def predict_step(self, batch_examples, batch_idx, **kwargs):
         """HyperSteer-specific prediction step with concept embeddings and visualizations."""
         self.dump_dir = kwargs.get("dump_dir", None)
-        concept_id_col = (
-            "sae_id"
-            if "sae" in self.__str__().lower()
-            and not kwargs.get("disable_neuronpedia_max_act", False)
-            else "concept_id"
-        )
-        use_synergy = kwargs.get("use_synergy", False)
         eval_output_length = kwargs.get("eval_output_length", 128)
         temperature = kwargs.get("temperature", 1.0)
 
@@ -716,21 +679,12 @@ class HyperSteer(Model, TrainerMixin):
         )
         os.makedirs(cross_attn_dump_dir, exist_ok=True)
 
-        # Process batch data
-        if use_synergy:
-            input_strings = batch_examples["steered_input"].tolist()
-        else:
-            input_strings = batch_examples["input"].tolist()
+        input_strings = batch_examples["input"].tolist()
 
         mag = torch.tensor(batch_examples["factor"].tolist()).to(self.device)
         idx = torch.tensor(batch_examples["concept_id"].tolist()).to(self.device)
-        max_acts = torch.tensor(
-            [
-                self.max_activations.get(id, 1.0)
-                for id in batch_examples[concept_id_col].tolist()
-            ]
-        ).to(self.device)
 
+        # tokenize input_strings
         inputs = self.tokenizer(
             input_strings, return_tensors="pt", padding=True, truncation=True
         ).to(self.device)
@@ -826,7 +780,6 @@ class HyperSteer(Model, TrainerMixin):
             {
                 "idx": idx,
                 "mag": mag,
-                "max_act": max_acts,
                 "prefix_length": kwargs["prefix_length"],
                 "locs": locs.to(self.device),
             }
@@ -904,8 +857,6 @@ class HyperSteer(Model, TrainerMixin):
             self.model, self.tokenizer, unpruned_generated_texts, self.device
         )
 
-        strengths = (mag * max_acts).cpu().float().tolist()
-
         # Clear the steering vector generated for this batch
         self.ax._reset_v()
 
@@ -917,7 +868,6 @@ class HyperSteer(Model, TrainerMixin):
         return {
             "generations": generated_texts,
             "perplexities": perplexities,
-            "strengths": strengths,
             "steering_vectors": steering_vectors,
         }
 

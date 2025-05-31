@@ -3,7 +3,6 @@ assets/
 multirun/
 outputs/
 wandb/
-data/axbench/concept16k_v2
 
 core.*
 

@@ -19,7 +19,7 @@ inference:
   ignore_latent_state: true
   ignore_steering_state: true
   run_distinct_infers: true
-  
+
   factor_selection:
     n_calls: 15
     factor_max: 2.0

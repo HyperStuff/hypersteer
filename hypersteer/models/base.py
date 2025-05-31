@@ -54,10 +54,6 @@ class BaseModel(ABC):
     def get_logits(self, concept_id, k=10):
         pass
 
-    def pre_compute_mean_activations(self, dump_dir, **kwargs):
-        """Optional method for pre-computing mean activations"""
-        pass
-
     def to(self, device):
         """Optional method for moving model to device"""
         pass

@@ -278,17 +278,6 @@ class InferenceConfig(BaseConfigModel):
     models: list[str] = Field(
         default_factory=list
     )  # Multiple models to run inference on
-    # DEPRECATED: batch_infer_hypernetwork is no longer used - batch inference is always enabled
-    batch_infer_hypernetwork: bool = True
-
-    # Latent related params
-    input_length: int = 128
-    output_length: int = 128
-    latent_num_of_examples: int = 36
-    latent_batch_size: int = 16
-    imbalance_factor: int = 2
-    disable_neuronpedia_max_act: bool = True
-    ignore_latent_state: bool = False
 
     # Steering related params
     steering_intervention_type: str = "addition"

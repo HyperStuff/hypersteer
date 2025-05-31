@@ -1,3 +1,4 @@
+from . import axbench, utils
 from .base import (
     BaseDatasetFactory,
     BaseSteeringDatasetFactory,

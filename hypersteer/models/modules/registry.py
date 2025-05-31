@@ -1,6 +1,9 @@
+from collections.abc import Callable
 from typing import Generic, TypeVar
 
-T = TypeVar("T")
+from hypersteer.models.base import BaseModel
+
+T = TypeVar("T", bound=BaseModel)
 
 
 class ModelRegistry(Generic[T]):
@@ -28,7 +31,7 @@ class ModelRegistry(Generic[T]):
         return list(cls._models.keys())
 
 
-def get_model(model_type: str, **kwargs):
+def get_model(model_type: str, **kwargs) -> BaseModel:
     """
     Get a model instance by type.
 
@@ -43,7 +46,7 @@ def get_model(model_type: str, **kwargs):
     return model_class(**kwargs)
 
 
-def list_available_models():
+def list_available_models() -> list[str]:
     """
     List all available model types.
 
@@ -53,7 +56,7 @@ def list_available_models():
     return ModelRegistry.list_models()
 
 
-def register_model(name: str):
+def register_model(name: str) -> Callable[[type[T]], type[T]]:
     """Decorator to register a model"""
 
     def decorator(cls):

@@ -29,10 +29,11 @@ dependencies = [
     "datasets>=2.14.0",
     "httpx>=0.24.0",
     "openai>=1.0.0",
-    "pyvene>=0.1.0",
+    "pyvene==0.1.7",
     "transformers==4.45.1",
     "adjusttext>=1.0.0",
     "optuna==4.3.0",
+    "pyreft>=0.0.1",
 ]
 
 [project.scripts]
@@ -47,10 +48,6 @@ dev = [
     "jupyter>=1.0.0",
     "pre-commit>=3.0.0",
     "ai_commit @ git+https://github.com/sidnb13/toolbox.git#subdirectory=src/ai_commit",
-]
-
-reft = [
-    "pyreft>=0.0.1",
 ]
 ray = [
     "hydra-ray-jobs-launcher @ git+https://github.com/sidnb13/hydra#egg=hydra-ray-jobs-launcher&subdirectory=plugins/hydra_ray_jobs_launcher",

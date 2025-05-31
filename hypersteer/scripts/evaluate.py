@@ -329,12 +329,6 @@ def plot_steering(
                 "y_label": "Aggregated",
                 "use_log_scale": False,
             },
-            {
-                "evaluator_name": "PerplexityEvaluator",
-                "metric_name": "strength",
-                "y_label": "Strength",
-                "use_log_scale": False,
-            },
         ]
         plot_metrics(
             jsonl_data=aggregated_results,
@@ -417,6 +411,11 @@ def eval_steering_single_task(args_tuple):
             None if bool(lm_caches) else lm_model.cache_in_mem,
             current_df,
         )
+    except Exception as e:
+        logger.error(
+            f"Error evaluating concept_id {concept_id}, model {model_name}, evaluator {evaluator_name}: {e}"
+        )
+        raise e
     finally:
         # Properly close both the HTTP client and async client
         async def cleanup():
@@ -444,6 +443,9 @@ def eval_steering(
         winrate_split_ratio=args.evaluate.winrate_split_ratio,
         infer_run=infer_run,
     )
+
+    # Collect all data from the generator into a list
+    concept_data_list = list(df_generator)
 
     # Load previous state if exists
     state = (
@@ -483,7 +485,7 @@ def eval_steering(
                     args.evaluate.winrate_baseline,
                     {},
                 )
-                for concept_id, current_df in df_generator
+                for concept_id, current_df in concept_data_list
                 if concept_id >= start_concept_id
                 and (select_concept_ids is None or concept_id in select_concept_ids)
                 for evaluator_name in args.evaluate.steering_evaluators
@@ -939,5 +941,5 @@ def main(cfg: DictConfig):
 
 
 if __name__ == "__main__":
-    load_dotenv()
+    load_dotenv(override=True)
     main()
