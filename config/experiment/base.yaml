@@ -35,7 +35,7 @@ evaluate:
 
 # Dataset overrides
 dataset:
-  max_concepts: 100
+  max_concepts: 50
   num_of_examples: -1
   cache_dir: assets/cache
 

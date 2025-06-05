@@ -122,6 +122,7 @@ class HyperAdditiveIntervention(
                 ),
                 add_gumbel_noise=kwargs.get("selection_head_add_gumbel_noise", False),
                 threshold=kwargs.get("selection_head_threshold", 0.5),
+                straight_through=kwargs.get("selection_head_straight_through", False),
             )
 
     def _update_v(self, new_vect: torch.Tensor):
