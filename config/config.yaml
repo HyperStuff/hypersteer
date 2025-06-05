@@ -7,9 +7,8 @@ defaults:
   - inference: base
   - evaluate: base
   - generate: base
-  - wandb: base
-  - launcher: base  # Default to base launcher, can be overridden
-  - experiment: null  # This will merge at root level when specified
+  - launcher: base # Default to base launcher, can be overridden
+  - experiment: null # This will merge at root level when specified
   - override hydra/job_logging: colorlog
   - override hydra/hydra_logging: colorlog
 
@@ -38,6 +37,17 @@ dataset:
       train: "2b/l10/train/data.parquet"
     hf_split: "eval"
     select_concept_ids: []
+
+wandb:
+  log: true
+  log_code: true
+  project: ${oc.env:WANDB_PROJECT,null}
+  entity: ${oc.env:WANDB_ENTITY,null}
+  run_name: ${oc.env:WANDB_RUN_NAME,null}
+  run_id: ${oc.env:WANDB_RUN_ID,null}
+  group: ${oc.env:WANDB_GROUP,null}
+  tags: ${oc.env:WANDB_TAGS,null}
+  notes: ${oc.env:WANDB_NOTES,null}
 
 # Hydra configuration
 hydra:

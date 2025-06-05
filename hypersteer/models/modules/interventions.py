@@ -33,6 +33,7 @@ class SelectionHead(nn.Module):
         learnable_temperature: bool = False,
         add_gumbel_noise: bool = False,
         threshold: float = 0.5,
+        straight_through: bool = True,
     ):
         super().__init__()
         self.proj = nn.Linear(hidden_size * 2, 1)
@@ -51,6 +52,7 @@ class SelectionHead(nn.Module):
             torch.tensor(start_temperature, requires_grad=self.learnable_temperature)
         )
         self.threshold = threshold
+        self.straight_through = straight_through
 
     def get_temperature(self) -> torch.Tensor:
         return self._temperature
@@ -68,16 +70,18 @@ class SelectionHead(nn.Module):
         ) * (step / total_steps)
         self._temperature.fill_(new_temp)
 
-    def forward(self, x, v, hard_mask=False, eps=1e-7):
+    def forward(self, x, v, hard_mask=False, eps=1e-6):
         latent = torch.cat([x, v.unsqueeze(1).expand_as(x)], dim=-1)
         if self.ln:
             latent = self.ln(latent)
 
-        _temperature = (
-            self._temperature.detach()
-            if not self.learnable_temperature
-            else self._temperature
+        _temperature = self._temperature.clip(
+            min=self.end_temperature - eps, max=self.start_temperature + eps
         )
+
+        if not self.learnable_temperature:
+            _temperature = _temperature.detach()
+
         logits = self.proj(latent)
 
         if self.add_gumbel_noise:
@@ -89,9 +93,10 @@ class SelectionHead(nn.Module):
         else:
             out = F.sigmoid(logits / _temperature)
 
-        # at inference time, we use the hard mask
-        if hard_mask:
-            out = (out > self.threshold).float()
+        if self.straight_through:
+            out = (out > self.threshold).to(out.dtype) + out - out.detach()
+        elif hard_mask:
+            out = (out > self.threshold).to(out.dtype)
         return out
 
 

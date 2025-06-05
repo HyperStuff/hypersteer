@@ -342,6 +342,113 @@ def plot_steering(
         logger.warning(f"Failed to plot: {e}")
 
 
+def process_mask_sparsity_metrics(
+    steering_df, dump_dir, eval_run, args: ExperimentConfig
+):
+    """
+    Calculate and log mask sparsity (L1 norm) metrics and plots for all columns ending with '_sparsity'.
+    """
+    import matplotlib.pyplot as plt
+
+    sparsity_metrics = {}
+    sparsity_cols = [col for col in steering_df.columns if col.endswith("_sparsity")]
+    if not sparsity_cols:
+        logger.warning(
+            "No columns ending with '_sparsity' found in steering_data.parquet."
+        )
+        return
+    for col in sparsity_cols:
+        model_name = col.replace("_sparsity", "")
+
+        def reduce_sparsity(x):
+            # Handle cases where sparsity might be stored as list/ndarray per example
+            if isinstance(x, list) or isinstance(x, np.ndarray):
+                return np.mean(x)
+            return x
+
+        reduced_sparsity = steering_df[col].dropna().map(reduce_sparsity)
+        avg_sparsity = reduced_sparsity.mean()
+        std_sparsity = reduced_sparsity.std()
+        sparsity_metrics[f"eval_mean_mask_sparsity/{model_name}"] = avg_sparsity
+        sparsity_metrics[f"eval_std_mask_sparsity/{model_name}"] = std_sparsity
+        logger.warning(
+            f"Average mask sparsity for {model_name}: {avg_sparsity:.4f} (std: {std_sparsity:.4f})"
+        )
+        # --- Save histogram plot to disk ---
+        plt.figure(figsize=(8, 5))
+        plt.hist(reduced_sparsity, bins=30, color="skyblue", edgecolor="black")
+        plt.title(
+            f"Mask Sparsity for {model_name}\nMean: {avg_sparsity:.4f}, Std: {std_sparsity:.4f}"
+        )
+        plt.xlabel("Per-example mask sparsity")
+        plt.ylabel("Count")
+        plt.grid(True, alpha=0.3)
+        # Optionally, add text box with stats
+        plt.gca().text(
+            0.98,
+            0.95,
+            f"Mean: {avg_sparsity:.4f}\nStd: {std_sparsity:.4f}",
+            transform=plt.gca().transAxes,
+            fontsize=10,
+            verticalalignment="top",
+            horizontalalignment="right",
+            bbox=dict(boxstyle="round", facecolor="white", alpha=0.7),
+        )
+        plot_path = Path(dump_dir) / eval_run / f"mask_sparsity_{model_name}.png"
+        plt.tight_layout()
+        plt.savefig(plot_path)
+        plt.close()
+        logger.warning(f"Saved mask sparsity histogram to {plot_path}")
+        # Log histogram to wandb if enabled
+        if args.evaluate.report_to == "wandb" and wandb.run:
+            wandb.log(
+                {
+                    f"eval/mask_sparsity_hist/{model_name}": wandb.Histogram(
+                        reduced_sparsity.values
+                    )
+                }
+            )
+        # Group by factor and plot boxplot/violinplot
+        if "factor" in steering_df.columns:
+            import seaborn as sns
+
+            factor_vals = steering_df["factor"]
+            # Align factor and sparsity values (dropna alignment)
+            factor_aligned = factor_vals[reduced_sparsity.index]
+            plot_df = pd.DataFrame(
+                {
+                    "factor": factor_aligned,
+                    "sparsity": reduced_sparsity.values,
+                }
+            )
+            plt.figure(figsize=(8, 5))
+            sns.boxplot(x="factor", y="sparsity", data=plot_df, color="skyblue")
+            plt.title(f"Mask Sparsity by Steering Factor for {model_name}")
+            plt.xlabel("Steering Factor")
+            plt.ylabel("Mask Sparsity")
+            plt.grid(True, alpha=0.3)
+            boxplot_path = (
+                Path(dump_dir) / eval_run / f"mask_sparsity_boxplot_{model_name}.png"
+            )
+            plt.tight_layout()
+            plt.savefig(boxplot_path)
+            plt.close()
+            logger.warning(f"Saved mask sparsity boxplot to {boxplot_path}")
+            # Log boxplot to wandb
+            if args.evaluate.report_to == "wandb" and wandb.run:
+                wandb.log(
+                    {
+                        f"eval/mask_sparsity_boxplot/{model_name}": wandb.Image(
+                            str(boxplot_path)
+                        )
+                    }
+                )
+    # Log to wandb if enabled
+    if args.evaluate.report_to == "wandb" and wandb.run:
+        wandb.log(sparsity_metrics)
+        logger.warning("Logged average mask sparsity to wandb.")
+
+
 def eval_steering_single_task(args_tuple):
     """Helper function to evaluate a single concept-model-evaluator combination"""
     (
@@ -588,6 +695,22 @@ def eval_steering(
     except Exception as e:
         logger.warning(f"Failed to load steering.jsonl: {e}. Aborting evaluation.")
         return
+
+    # Calculate and log average mask sparsity
+    steering_data_path = Path(dump_dir) / infer_run / "steering_data.parquet"
+    if steering_data_path.exists():
+        steering_df = pd.read_parquet(steering_data_path)
+        sparsity_cols = [
+            col for col in steering_df.columns if col.endswith("_sparsity")
+        ]
+        if sparsity_cols:
+            process_mask_sparsity_metrics(steering_df, dump_dir, eval_run, args)
+        else:
+            logger.warning(
+                "No columns ending with '_sparsity' found in steering_data.parquet."
+            )
+    else:
+        logger.warning(f"Steering data parquet file not found at {steering_data_path}.")
 
     # Aggregate LM reports
     aggregated_lm_report = {
