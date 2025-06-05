@@ -5,11 +5,11 @@ from typing import Any
 
 import torch
 import torch.distributed as dist
-import wandb
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from transformers import get_scheduler
 
+import wandb
 from hypersteer.utils.configs import ModelConfig, TrainingArgs, WandbConfig
 from hypersteer.utils.helpers import get_logger, get_rank, get_world_size
 
@@ -326,7 +326,7 @@ class Trainer:
             return {}
 
         aggregated = {}
-        for key in metrics_list[0].keys():
+        for _, key in metrics_list[0].keys():
             if key in ["loss", "grad_norm"] or key.endswith("_loss"):
                 # Average numerical metrics
                 values = [
