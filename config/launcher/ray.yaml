@@ -13,4 +13,4 @@ hydra:
     entrypoint_num_gpus: 1
     enable_gpu_blocking: true
     entrypoint_resources:
-      hypersteer-master: 1
+      hypersteer-selection: 1

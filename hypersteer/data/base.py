@@ -1,130 +1,93 @@
-from abc import ABC, abstractmethod
-from typing import Dict, Type, Callable
-import pandas as pd
-
-
 class DatasetFactoryRegistry:
     """Simple registry for dataset factory types"""
-    _factories: Dict[str, Type['BaseDatasetFactory']] = {}
-    
+
+    _factories: dict[str, type["BaseDatasetFactory"]] = {}
+
     @classmethod
-    def register(cls, name: str, factory_class: Type['BaseDatasetFactory']):
+    def register(cls, name: str, factory_class: type["BaseDatasetFactory"]):
         """Register a dataset factory class"""
         cls._factories[name] = factory_class
-    
+
     @classmethod
-    def get_factory(cls, name: str) -> Type['BaseDatasetFactory']:
+    def get_factory(cls, name: str) -> type["BaseDatasetFactory"]:
         """Get a registered factory class"""
         if name not in cls._factories:
-            raise ValueError(f"Unknown dataset factory type: {name}. Available: {list(cls._factories.keys())}")
+            raise ValueError(
+                f"Unknown dataset factory type: {name}. Available: {list(cls._factories.keys())}"
+            )
         return cls._factories[name]
-    
+
     @classmethod
     def list_factories(cls) -> list:
         """List all registered factory names"""
         return list(cls._factories.keys())
 
 
-class TrainingDatasetRegistry:
-    """Simple registry for training dataset functions"""
-    _functions: Dict[str, Callable] = {}
-    
-    @classmethod
-    def register(cls, name: str, function: Callable):
-        """Register a training dataset function"""
-        cls._functions[name] = function
-    
-    @classmethod
-    def get_function(cls, name: str) -> Callable:
-        """Get a registered training dataset function"""
-        if name not in cls._functions:
-            raise ValueError(f"Unknown training dataset function: {name}. Available: {list(cls._functions.keys())}")
-        return cls._functions[name]
-    
-    @classmethod
-    def list_functions(cls) -> list:
-        """List all registered function names"""
-        return list(cls._functions.keys())
+class BaseDatasetFactory:
+    """Base class for dataset factories (no abstract methods)"""
 
-
-class BaseDatasetFactory(ABC):
-    """Abstract base class for dataset factories"""
-    
     def __init__(self, **kwargs):
         """Initialize the dataset factory with common parameters"""
         pass
-    
-    @abstractmethod
-    def save_cache(self):
-        """Save the language model cache before exiting"""
-        pass
-    
-    @abstractmethod
-    def reset_stats(self):
-        """Reset API costs"""
-        pass
-    
-    @abstractmethod
-    def prepare_genre_concepts(self, concepts, **kwargs):
-        """Prepare genre concepts for the given concepts"""
-        pass
-    
-    @abstractmethod
-    def prepare_concepts(self, concepts, **kwargs):
-        """Prepare concepts and contrast concepts"""
-        pass
-    
-    @abstractmethod
-    def create_eval_df(self, concepts, subset_n, concept_genres_map, 
-                      train_contrast_concepts_map, eval_contrast_concepts_map, 
-                      mode="balance", **kwargs) -> pd.DataFrame:
-        """Create evaluation dataframe"""
-        pass
-    
-    @abstractmethod
-    def create_train_df(self, concept, n, concept_genres_map, **kwargs) -> pd.DataFrame:
-        """Create training dataframe"""
-        pass
-    
-    @abstractmethod
-    def create_dpo_df(self, existing_df, **kwargs) -> pd.DataFrame:
-        """Create DPO dataframe"""
-        pass
-    
-    def create_imbalance_eval_df(self, subset_n, factor=100) -> pd.DataFrame:
-        """Create imbalanced evaluation dataframe (optional implementation)"""
-        raise NotImplementedError("create_imbalance_eval_df not implemented for this factory")
 
 
-class BaseSteeringDatasetFactory(ABC):
-    """Abstract base class for steering dataset factories"""
-    
+class BaseSteeringDatasetFactory:
+    """Base class for steering dataset factories (no abstract methods)"""
+
     def __init__(self, **kwargs):
         """Initialize the steering dataset factory"""
         pass
-    
-    @abstractmethod
-    def create_eval_df(self, concepts, subset_n, steering_factors, 
-                      steering_datasets, concept_id, steering_model_name, **kwargs) -> pd.DataFrame:
-        """Create evaluation dataframe for steering"""
-        pass
-    
-    def augment_train_df_with_steered_prompts(self, train_df, concepts, **kwargs) -> pd.DataFrame:
-        """Augment training dataframe with steered prompts (optional implementation)"""
-        raise NotImplementedError("augment_train_df_with_steered_prompts not implemented for this factory")
 
 
 def register_factory(name: str):
     """Decorator to register a dataset factory"""
+
     def decorator(cls):
         DatasetFactoryRegistry.register(name, cls)
         return cls
+
     return decorator
 
 
-def register_training_dataset(name: str):
-    """Decorator to register a training dataset function"""
-    def decorator(func):
-        TrainingDatasetRegistry.register(name, func)
-        return func
-    return decorator 
+def get_dataset_factory(factory_type: str, **kwargs):
+    """
+    Get a dataset factory instance by type.
+
+    Args:
+        factory_type: The type of factory to create (e.g., 'axbench')
+        **kwargs: Arguments to pass to the factory constructor
+
+    Returns:
+        An instance of the requested dataset factory
+    """
+    factory_class = DatasetFactoryRegistry.get_factory(factory_type)
+    return factory_class(**kwargs)
+
+
+def get_steering_dataset_factory(factory_type: str, **kwargs):
+    """
+    Get a steering dataset factory instance by type.
+
+    Args:
+        factory_type: The type of factory to create (e.g., 'axbench')
+        **kwargs: Arguments to pass to the factory constructor
+
+    Returns:
+        An instance of the requested steering dataset factory
+    """
+    # Automatically append '_steering' suffix if not present
+    if not factory_type.endswith("_steering"):
+        factory_type = f"{factory_type}_steering"
+
+    factory_class = DatasetFactoryRegistry.get_factory(factory_type)
+    return factory_class(**kwargs)
+
+
+def list_available_factories():
+    """
+    List all available factory types.
+
+    Returns:
+        List of available factory type names
+    """
+    return DatasetFactoryRegistry.list_factories()

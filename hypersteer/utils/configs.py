@@ -126,6 +126,7 @@ class DatasetConfig(BaseConfigModel):
     hf_ignore_verifications: bool = False
     hf_save_infos: bool = False
     hf_trust_remote_code: bool = False
+    dataset_type: str = "axbench"
 
     # Train and eval sub-configs (override defaults above if specified)
     train: "DatasetConfig" = None

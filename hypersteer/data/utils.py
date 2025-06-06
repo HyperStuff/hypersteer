@@ -6,6 +6,57 @@ import datasets
 import torch
 import transformers
 
+from hypersteer.data.base import get_dataset_factory
+from hypersteer.utils.configs import ExperimentConfig
+
+
+def load_dataset_for_inference(args: ExperimentConfig):
+    """
+    Load HuggingFace dataset for inference and extract concept information.
+    """
+
+    # Load the dataset using the same function as training
+    factory = get_dataset_factory(
+        args.dataset.dataset_type,
+        tokenizer=args.dataset.eval.tokenizer
+        if hasattr(args.dataset.eval, "tokenizer")
+        else None,
+        dump_dir=args.dataset.eval.cache_dir
+        if hasattr(args.dataset.eval, "cache_dir")
+        else None,
+    )
+    dataset = factory.create_eval_ds(
+        dataset_name=args.dataset.eval.hf_dataset_name,
+        data_files=args.dataset.eval.hf_data_files,
+        split=args.dataset.eval.hf_split,
+        cache_dir=args.dataset.eval.cache_dir,
+        select_concept_ids=args.dataset.eval.select_concept_ids,
+        max_concepts=args.dataset.eval.max_concepts,
+        master_data_dir=args.dataset.master_data_dir,
+    )
+
+    # Extract unique concept information from the dataset
+    df = dataset.to_pandas()
+    concept_info = []
+
+    # Get unique concepts with their IDs
+    unique_concepts = df.groupby("concept_id").first()
+
+    for concept_id, row in unique_concepts.iterrows():
+        if concept_id >= 0:  # Skip negative concept IDs
+            concept_info.append(
+                {
+                    "concept_id": concept_id,
+                    "concept": row.get("input_concept", f"concept_{concept_id}"),
+                    "ref": f"https://neuronpedia.org/api/feature/{concept_id}",  # Default SAE link format
+                    "concept_genres_map": {
+                        row.get("input_concept", f"concept_{concept_id}"): ["text"]
+                    },
+                }
+            )
+
+    return concept_info
+
 
 def parse_positions(positions: str):
     # parse position

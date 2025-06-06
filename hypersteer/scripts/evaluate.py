@@ -11,22 +11,28 @@ import httpx
 import hydra
 import numpy as np
 import pandas as pd
-import wandb
 from dotenv import load_dotenv
 from omegaconf import DictConfig, OmegaConf
 from openai import AsyncOpenAI
 
+import wandb
 from hypersteer import LMJudgeEvaluator, PerplexityEvaluator, WinRateEvaluator
-from hypersteer.templates.html_templates import (
-    generate_html_with_highlight_text,
+from hypersteer.data.utils import load_dataset_for_inference
+from hypersteer.utils.configs import (
+    ExperimentConfig,
+    config_to_pydantic,
 )
-from hypersteer.utils.configs import ExperimentConfig, config_to_pydantic
 from hypersteer.utils.constants import (
     EVAL_STATE_FILE,
     STEERING_EXCLUDE_MODELS,
 )
 from hypersteer.utils.dry_run import patch_client
-from hypersteer.utils.helpers import dump_json, get_logger
+from hypersteer.utils.helpers import (
+    dump_json,
+    get_logger,
+    load_state,
+    process_jsonl_file,
+)
 from hypersteer.utils.language_models import LanguageModel
 from hypersteer.utils.plot_utils import (
     plot_metrics,
@@ -263,35 +269,6 @@ def save_results(
         else:
             combined_df = current_df
         combined_df.to_parquet(df_path, index=False)
-
-
-def load_state(dump_dir, mode, eval_run="evaluate"):
-    """
-    Load the state from a file if it exists.
-
-    Args:
-        dump_dir (str): The directory to load the state file from.
-
-    Returns:
-        dict: The loaded state dictionary, or None if no state file exists.
-    """
-    assert mode in ["latent", "steering"], "Invalid mode"
-    state_path = os.path.join(dump_dir, eval_run, f"{mode}_{EVAL_STATE_FILE}")
-    if os.path.exists(state_path):
-        with open(state_path, "rb") as f:
-            return pickle.load(f)
-    return None
-
-
-def combine_scores_per_concept(concept_data):
-    """Combine scores from concept and following evaluators for each method."""
-    return concept_data["results"]["LMJudgeEvaluator"]
-
-
-def process_jsonl_file(jsonl_lines):
-    for data in jsonl_lines:
-        data["results"]["LMJudgeEvaluator"] = combine_scores_per_concept(data)
-    return jsonl_lines
 
 
 def plot_steering(
@@ -789,109 +766,14 @@ def log_results_to_wandb(
             # Try to load from the saved config
             config_path = Path(dump_dir) / "config.yaml"
             if config_path.exists():
-                from omegaconf import OmegaConf
-
-                from hypersteer.utils.configs import (
-                    ExperimentConfig,
-                    config_to_pydantic,
-                )
-
                 cfg = OmegaConf.load(config_path)
                 args = config_to_pydantic(cfg, ExperimentConfig)
-
-                # Load concept info from dataset
-                from inference import load_dataset_for_inference
-
                 concept_info = load_dataset_for_inference(args)
         except Exception as e:
             logger.warning(f"Could not load concept info from dataset: {e}")
             concept_info = []
 
     concepts = []
-
-    # Process latent results if available
-    if (Path(dump_dir) / eval_run / "latent.jsonl").is_file():
-        latent_path = Path(dump_dir) / eval_run / "latent.jsonl"
-        latent_results = load_jsonl(latent_path)
-        # Check if any model results exist in AUCROCEvaluator
-        lsreft_included = (
-            len(latent_results[0]["results"].get("AUCROCEvaluator", {})) > 0
-        )
-        top_logits_path = Path(dump_dir) / infer_run / "top_logits.jsonl"
-        top_logits_results = (
-            load_jsonl(top_logits_path) if os.path.exists(top_logits_path) else None
-        )
-
-        # Get the first available model name from AUCROCEvaluator results
-        lsreft_model_name = next(
-            iter(latent_results[0]["results"].get("AUCROCEvaluator", {})),
-            None,
-        )
-
-        if concept_info and lsreft_model_name:
-            idx = 0
-            for concept_entry in concept_info:
-                concept = concept_entry["concept"]
-                sae_link = concept_entry["ref"]
-                auc = (
-                    latent_results[idx]["results"]["AUCROCEvaluator"][
-                        lsreft_model_name
-                    ]["roc_auc"]
-                    if lsreft_included
-                    else None
-                )
-                max_act = (
-                    latent_results[idx]["results"]["AUCROCEvaluator"][
-                        lsreft_model_name
-                    ]["max_act"]
-                    if lsreft_included
-                    else None
-                )
-                concepts += [[idx, concept, None, auc, max_act, None, sae_link]]
-                if top_logits_results is not None:
-                    top_logits = top_logits_results[idx]["results"][lsreft_model_name][
-                        "top_logits"
-                    ][0]
-                    neg_logits = top_logits_results[idx]["results"][lsreft_model_name][
-                        "neg_logits"
-                    ][0]
-                    top_table = wandb.Table(
-                        data=[(t[1], t[0]) for t in top_logits],
-                        columns=[
-                            "logits",
-                            "token",
-                        ],
-                    )
-                    neg_table = wandb.Table(
-                        data=[(t[1], t[0]) for t in neg_logits],
-                        columns=[
-                            "logits",
-                            "token",
-                        ],
-                    )
-                    wandb.log(
-                        {
-                            f"positive_logits/{idx}": wandb.plot.bar(
-                                top_table, "token", "logits", title=f"{concept} ({idx})"
-                            )
-                        }
-                    )
-                    wandb.log(
-                        {
-                            f"negative_logits/{idx}": wandb.plot.bar(
-                                neg_table, "token", "logits", title=f"{concept} ({idx})"
-                            )
-                        }
-                    )
-                idx += 1
-
-        # Log token level heatmaps
-        inference_path = Path(dump_dir) / infer_run / "latent_data.parquet"
-        if inference_path.exists():
-            inference_df = pd.read_parquet(inference_path)
-            if lsreft_included:
-                heatmap_html = generate_html_with_highlight_text(inference_df)
-                wandb.log({"latent/token_heatmap": wandb.Html(heatmap_html)})
 
     # Process steering results if available
     if (Path(dump_dir) / eval_run / "steering.jsonl").is_file() and concept_info:
@@ -1031,8 +913,6 @@ def run_eval(args: ExperimentConfig, infer_run="inference"):
     if args.wandb.log and args.evaluate.report_to == "wandb":
         # Load concept info for wandb logging
         try:
-            from inference import load_dataset_for_inference
-
             concept_info = load_dataset_for_inference(args)
         except Exception as e:
             logger.warning(f"Could not load concept info for wandb logging: {e}")

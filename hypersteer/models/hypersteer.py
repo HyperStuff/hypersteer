@@ -286,6 +286,8 @@ class HyperSteer(Model, TrainerMixin):
                 loss += (
                     selection_sparsity_loss * self.model_config.selection_l1_loss_coeff
                 )
+                step_outputs[("loss", "mask_l1")] = selection_sparsity_loss
+
             with torch.no_grad():
                 step_outputs[("metrics", "mask_sparsity")] = (
                     1 - selection_sparsity_loss.mean()

@@ -11,7 +11,6 @@ import hydra
 import optuna
 import pandas as pd
 import torch
-import wandb
 from dotenv import load_dotenv
 from omegaconf import DictConfig, OmegaConf
 from openai import AsyncOpenAI
@@ -19,11 +18,11 @@ from optuna.samplers import TPESampler
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, set_seed
 
+import wandb
 from hypersteer import get_model
-from hypersteer.data import get_steering_dataset_factory, get_training_dataset
+from hypersteer.data.base import get_dataset_factory
 from hypersteer.models.model import Model
 from hypersteer.scripts.evaluate import (
-    combine_scores_per_concept,
     eval_steering,
     log_results_to_wandb,
     plot_steering,
@@ -38,6 +37,7 @@ from hypersteer.utils.constants import CHAT_MODELS, CONFIG_FILE
 from hypersteer.utils.dry_run import patch_client
 from hypersteer.utils.helpers import (
     combine_all_results,
+    combine_scores_per_concept,
     configure_tokenizer_model,
     dump_json,
     get_and_set_device,
@@ -109,8 +109,16 @@ def load_dataset_for_inference(args: ExperimentConfig):
     """
 
     # Load the dataset using the same function as training
-    dataset = get_training_dataset(
-        dataset_type="axbench",
+    factory = get_dataset_factory(
+        args.dataset.eval.dataset_type,
+        tokenizer=args.dataset.eval.tokenizer
+        if hasattr(args.dataset.eval, "tokenizer")
+        else None,
+        dump_dir=args.dataset.eval.cache_dir
+        if hasattr(args.dataset.eval, "cache_dir")
+        else None,
+    )
+    dataset = factory.create_eval_ds(
         dataset_name=args.dataset.eval.hf_dataset_name,
         data_files=args.dataset.eval.hf_data_files,
         split=args.dataset.eval.hf_split,
@@ -335,20 +343,14 @@ def infer_steering(
     tokenizer.padding_side = "right"
     # Check if we're using PromptSteering or if the model has synergy enabled
     model_name = args.model.model_name
-    if model_name == "PromptSteering":
-        has_prompt_steering = True
-    else:
-        has_prompt_steering = getattr(args.model, "use_synergy", False)
 
     # Use the new dataset factory abstraction
-    dataset_factory = get_steering_dataset_factory(
-        "axbench",  # Default to axbench for now, could be configurable
+    dataset_factory = get_dataset_factory(
+        args.dataset.dataset_type,
         tokenizer=tokenizer,
         dump_dir=dump_dir,
         master_data_dir=args.inference.master_data_dir,
-        lm_client=lm_client,
         lm_model=args.inference.lm_model,
-        has_prompt_steering=has_prompt_steering,
     )
 
     is_chat_model = True if args.inference.model_name in CHAT_MODELS else False  # noqa: F405
@@ -1232,6 +1234,7 @@ def main(cfg: DictConfig):
 
     config = config_to_pydantic(config, ExperimentConfig)
     infer_run = run_inference(config)
+
     if config.inference.run_eval:
         run_eval(config, infer_run)
     clear_global_model()
