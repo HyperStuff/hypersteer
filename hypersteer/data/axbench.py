@@ -473,7 +473,6 @@ class AxbenchDatasetFactory(BaseDatasetFactory):
             split=split,
             cache_dir=cache_dir,
         )
-        breakpoint()
         logger.info(f"Loaded eval dataset with {len(dataset)} examples")
         if select_concept_ids:
             dataset = dataset.filter(

@@ -11,6 +11,7 @@ import hydra
 import optuna
 import pandas as pd
 import torch
+from datasets import concatenate_datasets, load_from_disk
 from dotenv import load_dotenv
 from omegaconf import DictConfig, OmegaConf
 from openai import AsyncOpenAI
@@ -292,10 +293,7 @@ def infer_steering(
 ):
     train_dir = args.dataset.train_dir
     dump_dir = args.dump_dir
-    num_of_examples = args.inference.steering_num_of_examples
     concept_info = load_dataset_for_inference(args)
-    steering_factors = args.inference.steering_factors
-    steering_datasets = args.inference.steering_datasets
 
     # Get list of all concept_ids
     concept_ids = [info["concept_id"] for info in concept_info]
@@ -386,75 +384,73 @@ def infer_steering(
     cache_key = get_cache_key(
         args.inference, my_concept_ids, concept_info, is_latent=False
     )
-    cache_file = os.path.join(cache_dir, f"steering_data_cache_{cache_key}.parquet")
+    cache_file = os.path.join(
+        cache_dir, f"steering_data_cache_{cache_key}"
+    )  # No extension for datasets
 
     # Try to load from cache first
     if os.path.exists(cache_file) and args.inference.use_cache:
         logger.info(f"Loading steering data from cache {cache_file}")
-        cached_df = pd.read_parquet(cache_file)
+        cached_ds = load_from_disk(cache_file)
         data_per_concept = {}
-        # Reconstruct the data_per_concept dictionary from the cached DataFrame
         for concept_id in my_concept_ids:
-            concept_data = cached_df[cached_df["concept_id"] == concept_id]
-            if not concept_data.empty:
-                sae_link = concept_data["sae_link"].iloc[0]
-                sae_id = concept_data["sae_id"].iloc[0]
-                data_per_concept[concept_id] = (
-                    concept_data.drop(["sae_link", "sae_id"], axis=1),
-                    sae_link,
-                    sae_id,
-                )
+            concept_ds = cached_ds.filter(lambda x: x["concept_id"] == concept_id)
+            if len(concept_ds) > 0:
+                sae_link = None
+                sae_id = None
+                # Try to get sae_link and sae_id from the first row if present
+                if "sae_link" in concept_ds.column_names:
+                    sae_link = concept_ds[0]["sae_link"]
+                if "sae_id" in concept_ds.column_names:
+                    sae_id = concept_ds[0]["sae_id"]
+                data_per_concept[concept_id] = (concept_ds, sae_link, sae_id)
     else:
         logger.info("Generating steering data and caching results")
         data_per_concept = {}
-        all_dfs = []
+        all_datasets = []
 
         for concept_id in my_concept_ids:
-            current_df, (_, sae_link, sae_id) = create_data_steering(
-                dataset_factory,
-                concept_info,
-                concept_id,
-                num_of_examples,
-                steering_factors,
-                steering_datasets,
-                args.inference,
+            current_ds = dataset_factory.create_eval_ds(
+                dataset_name=args.dataset.eval.hf_dataset_name,
+                data_files=args.dataset.eval.hf_data_files,
+                split=args.dataset.eval.hf_split,
+                cache_dir=args.dataset.eval.cache_dir,
+                select_concept_ids=[concept_id],
+                max_concepts=1,
+                master_data_dir=args.dataset.master_data_dir,
             )
-            # Add sae info to DataFrame for caching
-            current_df["sae_link"] = sae_link
-            current_df["sae_id"] = sae_id
-            all_dfs.append(current_df)
-
-            # Store in memory format
-            data_per_concept[concept_id] = (
-                current_df.drop(["sae_link", "sae_id"], axis=1),
-                sae_link,
-                sae_id,
+            concept_data = next(
+                (c for c in concept_info if c["concept_id"] == concept_id), None
             )
+            if concept_data is None:
+                raise ValueError(f"Concept ID {concept_id} not found in dataset")
+            sae_link = concept_data["ref"]
+            sae_id = int(sae_link.split("/")[-1])
+            all_datasets.append(current_ds)
+            data_per_concept[concept_id] = (current_ds, sae_link, sae_id)
 
         # Cache the results
-        if all_dfs and args.inference.use_cache:
-            cached_df = pd.concat(all_dfs, ignore_index=True)
-            cached_df.to_parquet(cache_file)
+        if all_datasets and args.inference.use_cache:
+            cached_ds = concatenate_datasets(all_datasets)
+            cached_ds.save_to_disk(cache_file)
             logger.info(f"Cached steering data to {cache_file}")
 
     # Determine which models to run inference on
     models_to_run = []
     if args.inference.models:
-        # Use the models list if provided
         models_to_run = args.inference.models
     else:
-        # Fall back to single model_name for backward compatibility
         models_to_run = [args.model.model_name]
 
     logger.info(f"Running inference on models: {models_to_run}")
 
-    # Create combined DataFrame for all concepts
-    logger.debug("Preparing combined DataFrame for batch inference")
-    combined_dfs = []
-    for concept_id in my_concept_ids:
-        concept_df = data_per_concept[concept_id][0]
-        combined_dfs.append(concept_df)
-    combined_df = pd.concat(combined_dfs, ignore_index=True)
+    # Create combined HuggingFace dataset for all concepts
+    logger.debug("Preparing combined dataset for batch inference")
+    combined_datasets = [
+        data_per_concept[concept_id][0] for concept_id in my_concept_ids
+    ]
+    combined_ds = concatenate_datasets(combined_datasets)
+    combined_df = combined_ds.to_pandas()  # For downstream code compatibility
 
     # Run inference for each model using full batch inference
     for model_name in models_to_run:
