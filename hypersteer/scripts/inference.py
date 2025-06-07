@@ -11,7 +11,7 @@ import hydra
 import optuna
 import pandas as pd
 import torch
-from datasets import concatenate_datasets, load_from_disk
+from datasets import load_from_disk
 from dotenv import load_dotenv
 from omegaconf import DictConfig, OmegaConf
 from openai import AsyncOpenAI
@@ -31,7 +31,6 @@ from hypersteer.scripts.evaluate import (
 )
 from hypersteer.utils.configs import (
     ExperimentConfig,
-    InferenceConfig,
     config_to_pydantic,
 )
 from hypersteer.utils.constants import CHAT_MODELS, CONFIG_FILE
@@ -45,7 +44,6 @@ from hypersteer.utils.helpers import (
     get_cache_key,
     get_logger,
     get_rank,
-    get_world_size,
 )
 from hypersteer.utils.model_utils import get_prefix_length, get_suffix_length
 from hypersteer.utils.patch import monkeypatch_ax_model_generate
@@ -102,89 +100,6 @@ def load_config(config_path):
     with open(Path(config_path) / CONFIG_FILE) as f:
         d = json.load(f)
     return d
-
-
-def load_dataset_for_inference(args: ExperimentConfig):
-    """
-    Load HuggingFace dataset for inference and extract concept information.
-    """
-
-    # Load the dataset using the same function as training
-    factory = get_dataset_factory(
-        args.dataset.eval.dataset_type,
-        tokenizer=args.dataset.eval.tokenizer
-        if hasattr(args.dataset.eval, "tokenizer")
-        else None,
-        dump_dir=args.dataset.eval.cache_dir
-        if hasattr(args.dataset.eval, "cache_dir")
-        else None,
-    )
-    dataset = factory.create_eval_ds(
-        dataset_name=args.dataset.eval.hf_dataset_name,
-        data_files=args.dataset.eval.hf_data_files,
-        split=args.dataset.eval.hf_split,
-        cache_dir=args.dataset.eval.cache_dir,
-        select_concept_ids=args.dataset.eval.select_concept_ids,
-        max_concepts=args.dataset.eval.max_concepts,
-        master_data_dir=args.dataset.master_data_dir,
-    )
-
-    # Extract unique concept information from the dataset
-    df = dataset.to_pandas()
-    concept_info = []
-
-    # Get unique concepts with their IDs
-    unique_concepts = df.groupby("concept_id").first()
-
-    for concept_id, row in unique_concepts.iterrows():
-        if concept_id >= 0:  # Skip negative concept IDs
-            concept_info.append(
-                {
-                    "concept_id": concept_id,
-                    "concept": row.get("input_concept", f"concept_{concept_id}"),
-                    "ref": f"https://neuronpedia.org/api/feature/{concept_id}",  # Default SAE link format
-                    "concept_genres_map": {
-                        row.get("input_concept", f"concept_{concept_id}"): ["text"]
-                    },
-                }
-            )
-
-    return concept_info
-
-
-def create_data_steering(
-    dataset_factory,
-    concept_info,
-    concept_id,
-    num_of_examples,
-    steering_factors,
-    steering_datasets,
-    args: InferenceConfig,
-):
-    # Find concept info for this concept_id
-    concept_data = next(
-        (c for c in concept_info if c["concept_id"] == concept_id), None
-    )
-    if concept_data is None:
-        raise ValueError(f"Concept ID {concept_id} not found in dataset")
-
-    concept = concept_data["concept"]
-    sae_link = concept_data["ref"]
-    sae_id = int(sae_link.split("/")[-1])
-
-    current_df = dataset_factory.create_eval_df(
-        [concept],
-        num_of_examples,
-        steering_factors,
-        steering_datasets,
-        concept_id=concept_id,
-        steering_model_name=args.steering_model_name,
-    )
-    current_df["concept_id"] = concept_id
-    current_df["sae_link"] = sae_link
-    current_df["sae_id"] = sae_id
-
-    return current_df, (concept_id, sae_link, sae_id)
 
 
 def prepare_df(current_df, tokenizer, is_chat_model, model_name):
@@ -257,12 +172,9 @@ def run_steering_inference(model: Model, examples: pd.DataFrame, **kwargs):
             )
         ):
             batch_examples = examples.iloc[i : i + batch_size]
-
-            # Call model-specific predict_step
             batch_results = model.predict_step(
                 batch_examples, batch_idx=batch_idx, **kwargs
             )
-
             # Aggregate results
             all_generations.extend(batch_results.get("generations", []))
             all_perplexities.extend(batch_results.get("perplexities", []))
@@ -285,15 +197,47 @@ def run_steering_inference(model: Model, examples: pd.DataFrame, **kwargs):
 
 def infer_steering(
     args: ExperimentConfig,
-    rank,
-    world_size,
     device,
-    logger,
     infer_run="inference",
 ):
-    train_dir = args.dataset.train_dir
-    dump_dir = args.dump_dir
-    concept_info = load_dataset_for_inference(args)
+    # Create a new OpenAI client.
+    lm_client = AsyncOpenAI(
+        api_key=os.environ.get("OPENAI_API_KEY"),
+        timeout=60.0,
+        http_client=httpx.AsyncClient(
+            limits=httpx.Limits(max_keepalive_connections=100, max_connections=1000),
+            headers={"Connection": "close"},
+        ),
+        max_retries=3,
+    )
+    if int(os.environ.get("OPENAI_DRY_RUN", "1")) == 1:
+        lm_client = patch_client(lm_client)
+
+    # Initialize the tokenizer once
+    tokenizer = AutoTokenizer.from_pretrained(
+        args.inference.steering_model_name, use_fast=False, model_max_length=1024
+    )
+    tokenizer.padding_side = "right"
+
+    # Create the dataset factory once
+    dataset_factory = get_dataset_factory(
+        args.dataset.eval.dataset_type,
+        tokenizer=tokenizer,
+        dump_dir=getattr(args.dataset.eval, "cache_dir", None),
+        master_data_dir=args.inference.master_data_dir,
+        lm_model=args.inference.lm_model,
+    )
+
+    # Get concept info using the factory
+    concept_info = dataset_factory.get_concept_info(
+        dataset_name=args.dataset.eval.hf_dataset_name,
+        split=args.dataset.eval.hf_split,
+        data_files=args.dataset.eval.hf_data_files,
+        cache_dir=args.dataset.eval.cache_dir,
+        select_concept_ids=args.dataset.eval.select_concept_ids,
+        max_concepts=args.dataset.eval.max_concepts,
+        master_data_dir=args.dataset.master_data_dir,
+    )
 
     # Get list of all concept_ids
     concept_ids = [info["concept_id"] for info in concept_info]
@@ -311,46 +255,7 @@ def infer_steering(
 
         logger.debug(f"Selected concept IDs: {concept_ids}")
 
-    # For now, only rank 0 processes all concepts (proper distributed inference will be implemented later)
-    if rank == 0:
-        my_concept_ids = concept_ids
-    else:
-        my_concept_ids = []  # Other ranks do nothing for now
-
-    if len(my_concept_ids) == 0:
-        logger.info("No concepts to process. Exiting.")
-        return
-
-    # Create a new OpenAI client.
-    lm_client = AsyncOpenAI(
-        api_key=os.environ.get("OPENAI_API_KEY"),
-        timeout=60.0,
-        http_client=httpx.AsyncClient(
-            limits=httpx.Limits(max_keepalive_connections=100, max_connections=1000),
-            headers={"Connection": "close"},
-        ),
-        max_retries=3,
-    )
-    if int(os.environ.get("OPENAI_DRY_RUN", "1")) == 1:
-        lm_client = patch_client(lm_client)
-
-    # Initialize the dataset factory with the tokenizer.
-    tokenizer = AutoTokenizer.from_pretrained(
-        args.inference.steering_model_name, use_fast=False, model_max_length=1024
-    )
-    tokenizer.padding_side = "right"
-    # Check if we're using PromptSteering or if the model has synergy enabled
-    model_name = args.model.model_name
-
-    # Use the new dataset factory abstraction
-    dataset_factory = get_dataset_factory(
-        args.dataset.dataset_type,
-        tokenizer=tokenizer,
-        dump_dir=dump_dir,
-        master_data_dir=args.inference.master_data_dir,
-        lm_model=args.inference.lm_model,
-    )
-
+    # Use the new dataset factory abstraction for eval dataset creation
     is_chat_model = True if args.inference.model_name in CHAT_MODELS else False  # noqa: F405
     prefix_length = 1  # prefix is default to 1 for all models due to the BOS token.
     if is_chat_model:
@@ -382,7 +287,7 @@ def infer_steering(
     cache_dir = Path(args.dataset.cache_dir or "assets/data/axbench/cache")
     cache_dir.mkdir(parents=True, exist_ok=True)
     cache_key = get_cache_key(
-        args.inference, my_concept_ids, concept_info, is_latent=False
+        args.inference, concept_ids, concept_info, is_latent=False
     )
     cache_file = os.path.join(
         cache_dir, f"steering_data_cache_{cache_key}"
@@ -390,50 +295,26 @@ def infer_steering(
 
     # Try to load from cache first
     if os.path.exists(cache_file) and args.inference.use_cache:
-        logger.info(f"Loading steering data from cache {cache_file}")
-        cached_ds = load_from_disk(cache_file)
-        data_per_concept = {}
-        for concept_id in my_concept_ids:
-            concept_ds = cached_ds.filter(lambda x: x["concept_id"] == concept_id)
-            if len(concept_ds) > 0:
-                sae_link = None
-                sae_id = None
-                # Try to get sae_link and sae_id from the first row if present
-                if "sae_link" in concept_ds.column_names:
-                    sae_link = concept_ds[0]["sae_link"]
-                if "sae_id" in concept_ds.column_names:
-                    sae_id = concept_ds[0]["sae_id"]
-                data_per_concept[concept_id] = (concept_ds, sae_link, sae_id)
+        logger.debug(f"Loading steering data from cache {cache_file}")
+        eval_ds = load_from_disk(cache_file)
+        eval_df = eval_ds.to_pandas()
     else:
-        logger.info("Generating steering data and caching results")
-        data_per_concept = {}
-        all_datasets = []
+        logger.debug("Generating steering data and caching results")
 
-        for concept_id in my_concept_ids:
-            current_ds = dataset_factory.create_eval_ds(
-                dataset_name=args.dataset.eval.hf_dataset_name,
-                data_files=args.dataset.eval.hf_data_files,
-                split=args.dataset.eval.hf_split,
-                cache_dir=args.dataset.eval.cache_dir,
-                select_concept_ids=[concept_id],
-                max_concepts=1,
-                master_data_dir=args.dataset.master_data_dir,
-            )
-            concept_data = next(
-                (c for c in concept_info if c["concept_id"] == concept_id), None
-            )
-            if concept_data is None:
-                raise ValueError(f"Concept ID {concept_id} not found in dataset")
-            sae_link = concept_data["ref"]
-            sae_id = int(sae_link.split("/")[-1])
-            all_datasets.append(current_ds)
-            data_per_concept[concept_id] = (current_ds, sae_link, sae_id)
+        selected_concepts = [c["concept"] for c in concept_info]
+        eval_ds = dataset_factory.create_eval_ds(
+            concepts=selected_concepts,
+            subset_n=args.inference.steering_num_of_examples,
+            steering_factors=args.inference.steering_factors,
+            steering_datasets=args.inference.steering_datasets,
+            steering_model_name=args.inference.model_name,
+        )
 
-        # Cache the results
-        if all_datasets and args.inference.use_cache:
-            cached_ds = concatenate_datasets(all_datasets)
-            cached_ds.save_to_disk(cache_file)
-            logger.info(f"Cached steering data to {cache_file}")
+        if eval_ds and args.inference.use_cache:
+            eval_ds.save_to_disk(cache_file)
+            logger.debug(f"Cached steering data to {cache_file}")
+
+        eval_df = eval_ds.to_pandas()
 
     # Determine which models to run inference on
     models_to_run = []
@@ -442,19 +323,11 @@ def infer_steering(
     else:
         models_to_run = [args.model.model_name]
 
-    logger.info(f"Running inference on models: {models_to_run}")
-
-    # Create combined HuggingFace dataset for all concepts
-    logger.debug("Preparing combined dataset for batch inference")
-    combined_datasets = [
-        data_per_concept[concept_id][0] for concept_id in my_concept_ids
-    ]
-    combined_ds = concatenate_datasets(combined_datasets)
-    combined_df = combined_ds.to_pandas()  # For downstream code compatibility
+    logger.debug(f"Running inference on models: {models_to_run}")
 
     # Run inference for each model using full batch inference
     for model_name in models_to_run:
-        logger.info(f"Loading {model_name} on {device} for inference.")
+        logger.debug(f"Loading {model_name} on {device} for inference.")
 
         model_config = args.model
 
@@ -464,11 +337,11 @@ def infer_steering(
             tokenizer=tokenizer,
             device=device,
             training_args=model_config,
-            concept_ids=my_concept_ids,
+            concept_ids=concept_ids,
             model_config=model_config,
         )
         benchmark_model.load(
-            dump_dir=train_dir,
+            dump_dir=args.dataset.train_dir,
             mode="steering",
         )
         benchmark_model.to(device)
@@ -477,14 +350,14 @@ def infer_steering(
             benchmark_model.ax.to(torch.bfloat16)
 
         # Run full inference on all concepts at once
-        logger.info(f"Running batch inference on {len(my_concept_ids)} concepts")
+        logger.debug(f"Running batch inference on {len(concept_ids)} concepts")
         results = run_steering_inference(
             benchmark_model,
-            combined_df,
+            eval_df,
             batch_size=args.inference.steering_batch_size,
             prefix_length=prefix_length,
             dump_dir=Path(args.dump_dir) / infer_run,
-            concept_id=my_concept_ids,  # Pass all concept IDs for batch processing
+            concept_id=concept_ids,  # Pass all concept IDs for batch processing
             eval_output_length=args.inference.steering_output_length,
             temperature=args.inference.temperature,
             use_synergy=getattr(model_config, "use_synergy", False),
@@ -492,22 +365,20 @@ def infer_steering(
 
         # Store the results in combined_df
         for k, v in results.items():
-            combined_df[f"{model_name}_{k}"] = v
+            eval_df[f"{model_name}_{k}"] = v
 
         del benchmark_model
         torch.cuda.empty_cache()
 
-    # Save results only on rank 0 (assuming distributed inference will be implemented properly in the future)
-    if rank == 0:
-        combined_df = combined_df.sort_values(
-            by=["concept_id", "input_id", "factor"]
-        ).reset_index(drop=True)
-        combined_df.to_parquet(
-            Path(args.dump_dir) / infer_run / "steering_data.parquet", engine="pyarrow"
-        )
-        logger.info(
-            f"Saved steering inference results to {Path(args.dump_dir) / infer_run / 'steering_data.parquet'}"
-        )
+    eval_df = eval_df.sort_values(by=["concept_id", "input_id", "factor"]).reset_index(
+        drop=True
+    )
+    eval_df.to_parquet(
+        Path(args.dump_dir) / infer_run / "steering_data.parquet", engine="pyarrow"
+    )
+    logger.debug(
+        f"Saved steering inference results to {Path(args.dump_dir) / infer_run / 'steering_data.parquet'}"
+    )
 
 
 def select_steering_factors(
@@ -520,7 +391,19 @@ def select_steering_factors(
     logger.info("=" * 80)
 
     dump_dir = Path(args.dump_dir)
-    concept_info = load_dataset_for_inference(args)
+    factory = get_dataset_factory(
+        args.dataset.eval.dataset_type,
+        tokenizer=getattr(args.dataset.eval, "tokenizer", None),
+        dump_dir=getattr(args.dataset.eval, "cache_dir", None),
+    )
+    concept_info = factory.get_concept_info(
+        split=getattr(args.dataset.eval, "hf_split", "train"),
+        data_files=getattr(args.dataset.eval, "hf_data_files", None),
+        cache_dir=getattr(args.dataset.eval, "cache_dir", None),
+        select_concept_ids=getattr(args.dataset.eval, "select_concept_ids", None),
+        max_concepts=getattr(args.dataset.eval, "max_concepts", None),
+        master_data_dir=getattr(args.dataset, "master_data_dir", None),
+    )
 
     # Make eval run dir
     if args.evaluate.run_distinct_evals:
@@ -1180,16 +1063,11 @@ def run_inference(args: ExperimentConfig):
     )
     set_seed(args.seed)
 
-    # Get the rank and world_size from environment variables
-    rank = get_rank()
-    world_size = get_world_size()
-    local_rank = int(os.environ.get("LOCAL_RANK", 0))
-
-    # Set the device for this process
+    local_rank = get_rank()
     device = get_and_set_device(local_rank)
 
     # Define common arguments for all inference functions
-    _common_args = [args, rank, world_size, device, logger]
+    _common_args = [args, device]
     _common_kwargs = {"infer_run": infer_run}
 
     if args.inference.factor_selection.enable:
@@ -1226,7 +1104,9 @@ def main(cfg: DictConfig):
         if pretrained_cfg_path.exists():
             logger.info(f"Loading pretrained config from {pretrained_cfg_path}")
             pretrained_cfg = OmegaConf.load(pretrained_cfg_path)
-            config = OmegaConf.merge(pretrained_cfg, config)
+            OmegaConf.set_struct(config, False)
+            config = OmegaConf.merge(config, pretrained_cfg)
+            OmegaConf.set_struct(config, True)
 
     config = config_to_pydantic(config, ExperimentConfig)
     infer_run = run_inference(config)

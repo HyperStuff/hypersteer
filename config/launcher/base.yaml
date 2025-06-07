@@ -1,7 +1,0 @@
-# @package _global_
-# Base launcher configuration
-# This merges at root level when specified
-
-hydra:
-  launcher:
-    _target_: hydra._internal.BasicLauncher 

@@ -937,7 +937,9 @@ def main(cfg: DictConfig):
     if pretrained_cfg_path.exists():
         logger.info(f"Loading pretrained config from {pretrained_cfg_path}")
         pretrained_cfg = OmegaConf.load(pretrained_cfg_path)
-        config = OmegaConf.merge(pretrained_cfg, config)
+        OmegaConf.set_struct(config, False)
+        config = OmegaConf.merge(config, pretrained_cfg)
+        OmegaConf.set_struct(config, True)
 
     config = config_to_pydantic(config, ExperimentConfig)
     run_eval(config, infer_run=config.evaluate.infer_run or "inference")

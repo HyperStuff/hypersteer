@@ -351,6 +351,8 @@ class AxbenchDatasetFactory(BaseDatasetFactory):
         start_concept_id=0,
         is_chat_model=True,
         include_system_prompt=False,
+        has_prompt_steering=False,
+        master_data_dir=None,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -366,6 +368,10 @@ class AxbenchDatasetFactory(BaseDatasetFactory):
         self.seed = kwargs.get("seed", 42)
         self.logger = kwargs.get("logger", logger)
         self.lm_model = None
+        self.has_prompt_steering = has_prompt_steering or kwargs.get(
+            "has_prompt_steering", False
+        )
+        self.master_data_dir = master_data_dir or kwargs.get("master_data_dir", None)
         if client is not None:
             lm_model = kwargs.get("lm_model", "gpt-4o-mini")
             self.lm_model = LanguageModel(
@@ -373,6 +379,7 @@ class AxbenchDatasetFactory(BaseDatasetFactory):
                 client,
                 dump_dir,
                 use_cache=use_cache,
+                master_data_dir=self.master_data_dir,
             )
         # Optionally load pregenerated data
         self.overwrite_inference_data_dir = kwargs.get(
@@ -392,6 +399,16 @@ class AxbenchDatasetFactory(BaseDatasetFactory):
         # Load seed sentences and instructions
         self.seed_sentences = get_seed_sentences_dataset()
         self.seed_instructions = get_seed_instructions_dataset()
+
+    async def _get_steering_prompts(self, concepts):
+        # Use the LanguageModel to generate steering prompts for each concept
+        prompts = [T_GENERATE_STEERING_PROMPT % (concept) for concept in concepts]
+        completions = await self.lm_model.chat_completions(
+            api_names=[self.lm_model.model] * len(prompts),
+            prompts=prompts,
+            batch_size=8,
+        )
+        return [c.strip() for c in completions]
 
     def create_training_ds(
         self,
@@ -455,25 +472,226 @@ class AxbenchDatasetFactory(BaseDatasetFactory):
 
     def create_eval_ds(
         self,
+        concepts,
+        subset_n=1,
+        steering_factors=None,
+        steering_datasets=None,
+        steering_model_name=None,
+        **kwargs,
+    ):
+        """
+        Generate a HuggingFace Dataset for steering evaluation, for all provided concepts, factors, and dataset types.
+        Args:
+            concepts: List of concept names/strings to evaluate
+            subset_n: Number of prompts/examples per concept
+            steering_factors: List of steering factors to use
+            steering_datasets: List of steering dataset types (e.g., 'OUATPrefix', 'AlpacaEval', ...)
+            steering_model_name: (Optional) Model name for formatting
+        Returns:
+            HuggingFace Dataset containing all evaluation examples
+        """
+        assert concepts is not None, "concepts must be provided"
+        assert steering_factors is not None, "steering_factors must be provided"
+        assert steering_datasets is not None, "steering_datasets must be provided"
+        all_datasets = []
+        for dataset_name in steering_datasets:
+            if dataset_name == "OUATPrefix":
+                all_examples = []
+                for idx, concept in enumerate(concepts):
+                    for i in range(subset_n):
+                        for factor in steering_factors:
+                            all_examples.append(
+                                {
+                                    "dataset_name": dataset_name,
+                                    "concept_id": idx,
+                                    "input_concept": concept,
+                                    "input_id": i,
+                                    "factor": factor,
+                                    "input": "Once upon a time, there was a ",
+                                }
+                            )
+                all_datasets.append(
+                    Dataset.from_dict(
+                        {k: [ex[k] for ex in all_examples] for k in all_examples[0]}
+                    )
+                )
+            elif dataset_name == "AlpacaEval":
+                alpaca_eval_df = load_dataset(
+                    "tatsu-lab/alpaca_eval", split="eval", trust_remote_code=True
+                ).to_pandas()
+                if self.has_prompt_steering and self.lm_model is not None:
+                    steering_prompts = asyncio.run(self._get_steering_prompts(concepts))
+                else:
+                    steering_prompts = [
+                        T_PROMPT_STEERING % (concept) for concept in concepts
+                    ]
+                all_examples = []
+                for idx, concept in enumerate(concepts):
+                    sampled_prompts = alpaca_eval_df.sample(
+                        subset_n, random_state=int(idx)
+                    )["instruction"].tolist()
+                    for i in range(subset_n):
+                        sampled_prompt = sampled_prompts[i]
+                        steering_prompt = (
+                            steering_prompts[idx]
+                            if steering_prompts[idx] != ""
+                            else T_PROMPT_STEERING % (concept)
+                        )
+                        steered_prompt = (
+                            f" {steering_prompt}\n\nQuestion: {sampled_prompt}"
+                        )
+                        if steering_model_name == "meta-llama/Llama-3.1-8B-Instruct":
+                            formatted_steered_prompt = (
+                                self.tokenizer.apply_chat_template(
+                                    [
+                                        {
+                                            "role": "system",
+                                            "content": "You are a helpful assistant.",
+                                        },
+                                        {"role": "user", "content": steered_prompt},
+                                    ],
+                                    tokenize=True,
+                                    add_generation_prompt=True,
+                                )[1:]
+                            )
+                            formatted_steered_prompt = self.tokenizer.decode(
+                                formatted_steered_prompt
+                            )
+                            formatted_prompt = self.tokenizer.apply_chat_template(
+                                [
+                                    {
+                                        "role": "system",
+                                        "content": "You are a helpful assistant.",
+                                    },
+                                    {"role": "user", "content": sampled_prompt},
+                                ],
+                                tokenize=True,
+                                add_generation_prompt=True,
+                            )[1:]
+                            formatted_prompt = self.tokenizer.decode(formatted_prompt)
+                        else:
+                            formatted_steered_prompt = (
+                                self.tokenizer.apply_chat_template(
+                                    [{"role": "user", "content": steered_prompt}],
+                                    tokenize=True,
+                                    add_generation_prompt=True,
+                                )[1:]
+                            )
+                            formatted_steered_prompt = self.tokenizer.decode(
+                                formatted_steered_prompt
+                            )
+                            formatted_prompt = self.tokenizer.apply_chat_template(
+                                [{"role": "user", "content": sampled_prompt}],
+                                tokenize=True,
+                                add_generation_prompt=True,
+                            )[1:]
+                            formatted_prompt = self.tokenizer.decode(formatted_prompt)
+                        for factor in steering_factors:
+                            all_examples.append(
+                                {
+                                    "dataset_name": dataset_name,
+                                    "concept_id": idx,
+                                    "input_concept": concept,
+                                    "input_id": i,
+                                    "factor": factor,
+                                    "original_prompt": sampled_prompt,
+                                    "steered_input": formatted_steered_prompt,
+                                    "input": formatted_prompt,
+                                }
+                            )
+                all_datasets.append(
+                    Dataset.from_dict(
+                        {k: [ex[k] for ex in all_examples] for k in all_examples[0]}
+                    )
+                )
+            elif dataset_name in ("AlpacaEval_Suppress", "AlpacaEval_Synergy"):
+                alpaca_eval_df = load_dataset(
+                    "tatsu-lab/alpaca_eval", split="eval", trust_remote_code=True
+                ).to_pandas()
+                common_steering_factors = steering_factors
+                if dataset_name == "AlpacaEval_Suppress":
+                    common_steering_factors = [
+                        f * -1.0 for f in common_steering_factors
+                    ]
+                if self.has_prompt_steering and self.lm_model is not None:
+                    steering_prompts = asyncio.run(self._get_steering_prompts(concepts))
+                else:
+                    steering_prompts = [
+                        T_PROMPT_STEERING % (concept) for concept in concepts
+                    ]
+                all_examples = []
+                for idx, concept in enumerate(concepts):
+                    for i in range(subset_n):
+                        sampled_prompt = alpaca_eval_df.sample(1)[
+                            "instruction"
+                        ].tolist()[0]
+                        steering_prompt = (
+                            steering_prompts[idx]
+                            if steering_prompts[idx] != ""
+                            else T_PROMPT_STEERING % (concept)
+                        )
+                        steered_prompt = (
+                            f" {steering_prompt}\n\nQuestion: {sampled_prompt}"
+                        )
+                        formatted_steered_prompt = self.tokenizer.apply_chat_template(
+                            [{"role": "user", "content": steered_prompt}],
+                            tokenize=False,
+                            add_generation_prompt=True,
+                        )
+                        for factor in common_steering_factors:
+                            all_examples.append(
+                                {
+                                    "dataset_name": dataset_name,
+                                    "concept_id": idx,
+                                    "input_concept": concept,
+                                    "input_id": i,
+                                    "factor": factor,
+                                    "original_prompt": sampled_prompt,
+                                    "input": formatted_steered_prompt,
+                                }
+                            )
+                all_datasets.append(
+                    Dataset.from_dict(
+                        {k: [ex[k] for ex in all_examples] for k in all_examples[0]}
+                    )
+                )
+            else:
+                raise NotImplementedError(
+                    f"Steering dataset {dataset_name} not implemented."
+                )
+        if len(all_datasets) == 1:
+            return all_datasets[0]
+        return concatenate_datasets(all_datasets)
+
+    def get_concept_info(
+        self,
         dataset_name,
+        split="train",
         data_files=None,
-        split="test",
         cache_dir=None,
         select_concept_ids=None,
         max_concepts=None,
         **kwargs,
     ):
         """
-        Load and process AxBench evaluation dataset from HuggingFace, returning a HuggingFace dataset.
+        Load the AxBench dataset for the specified split and return concept info dicts.
+        Args:
+            split: "train" or "eval"
+            data_files: Optional data files dict
+            cache_dir: Optional cache dir
+            select_concept_ids: Optional list of concept IDs to filter
+            max_concepts: Optional max number of concepts
+        Returns:
+            List of dicts: {concept_id, concept, ref, concept_genres_map}
         """
-        logger.info(f"Loading eval dataset {dataset_name} with files {data_files}")
+        logger.info(f"Loading concept info from split={split}, data_files={data_files}")
         dataset = load_dataset(
             dataset_name,
             data_files=data_files,
             split=split,
             cache_dir=cache_dir,
         )
-        logger.info(f"Loaded eval dataset with {len(dataset)} examples")
+        logger.info(f"Loaded dataset with {len(dataset)} examples for concept info")
         if select_concept_ids:
             dataset = dataset.filter(
                 lambda x: x["concept_id"] in select_concept_ids, num_proc=4
@@ -490,4 +708,19 @@ class AxbenchDatasetFactory(BaseDatasetFactory):
             logger.info(
                 f"Limited to {len(limited_concept_ids)} concepts with {len(dataset)} examples"
             )
-        return dataset
+        df = dataset.to_pandas()
+        concept_info = []
+        unique_concepts = df.groupby("concept_id").first()
+        for concept_id, row in unique_concepts.iterrows():
+            if concept_id >= 0:
+                concept_info.append(
+                    {
+                        "concept_id": concept_id,
+                        "concept": row.get("output_concept", f"concept_{concept_id}"),
+                        "ref": f"https://neuronpedia.org/api/feature/{concept_id}",
+                        "concept_genres_map": {
+                            row.get("output_concept", f"concept_{concept_id}"): ["text"]
+                        },
+                    }
+                )
+        return concept_info
