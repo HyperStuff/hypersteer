@@ -267,3 +267,18 @@ class Model(BaseModel):
                 else:
                     self.ax_model = self.ax_model.to(device)
         return self
+
+    def backward_step(self, step_outputs, optimizer, lr_scheduler, training_args):
+        # Default: just step optimizer and lr_scheduler, optionally grad norm if implemented
+        if (
+            hasattr(self, "get_trainable_parameters")
+            and training_args.max_grad_norm > 0
+        ):
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                self.get_trainable_parameters(),
+                training_args.max_grad_norm,
+            )
+            step_outputs["grad_norm"] = grad_norm
+        optimizer.step()
+        lr_scheduler.step()
+        return step_outputs

@@ -33,7 +33,6 @@ dependencies = [
     "transformers==4.45.1",
     "adjusttext>=1.0.0",
     "optuna==4.3.0",
-    "pyreft>=0.0.1",
 ]
 
 [project.scripts]

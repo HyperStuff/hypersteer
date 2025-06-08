@@ -7,13 +7,13 @@ from pathlib import Path
 
 import hydra
 import torch
-import wandb
 from dotenv import load_dotenv
 from omegaconf import DictConfig, OmegaConf
 from transformers import AutoModelForCausalLM, AutoTokenizer, set_seed
 
+import wandb
 from hypersteer import get_model
-from hypersteer.data import get_training_dataset
+from hypersteer.data import get_dataset_factory
 from hypersteer.scripts.evaluate import run_eval
 from hypersteer.scripts.inference import run_inference
 from hypersteer.training import Trainer
@@ -70,20 +70,29 @@ def main(cfg: DictConfig):
         args.model.target_model_name,
         torch_dtype=torch.bfloat16 if args.train.use_bf16 else None,
     )
+
+    # model_instance.model.layers = model_instance.model.layers[:1]
+
     model_instance = model_instance.eval()
     model_instance.to(device)
 
     configure_tokenizer_model(model_instance, tokenizer)
 
     # Use train config for training dataset
-    training_dataset = get_training_dataset(
-        dataset_type="axbench",
+    factory = get_dataset_factory(
+        args.dataset.dataset_type,
+        model=model_instance,
+        tokenizer=tokenizer,
+        dump_dir=args.dump_dir,
+        dataset_category="instruction",  # or as needed
+        num_of_examples=args.dataset.train.num_of_examples,
+        output_length=args.inference.steering_output_length,
+    )
+    training_dataset = factory.create_training_ds(
         dataset_name=args.dataset.train.hf_dataset_name,
         data_files=args.dataset.train.hf_data_files,
         split=args.dataset.train.hf_split,
         cache_dir=args.dataset.train.cache_dir,
-        tokenizer=tokenizer,
-        model_name=args.model.target_model_name,
         binarize=args.train.binarize_dataset,
         train_on_negative=args.train.train_on_negative,
         output_length=args.inference.steering_output_length,

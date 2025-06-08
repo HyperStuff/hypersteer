@@ -1,15 +1,15 @@
 import gc
 import os
 import random
+from contextlib import nullcontext
+from typing import Any
 
 import einops
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
-import wandb
 from pyvene import IntervenableConfig, IntervenableModel
 from safetensors.torch import load_file, save_file
 from torch.utils.data import DataLoader
@@ -90,6 +90,13 @@ class HyperSteer(Model, TrainerMixin):
             low_rank_dimension=self.model_config.low_rank_dimension,
             use_selection_head=self.model_config.use_selection_head,
             use_ln=self.model_config.use_selection_ln,
+            selection_head_start_temperature=self.model_config.selection_head_start_temperature,
+            selection_head_end_temperature=self.model_config.selection_head_end_temperature,
+            selection_head_learnable_temperature=self.model_config.selection_head_learnable_temperature,
+            selection_head_anneal_temperature=self.model_config.selection_head_anneal_temperature,
+            selection_head_add_gumbel_noise=self.model_config.selection_head_add_gumbel_noise,
+            selection_head_threshold=self.model_config.selection_head_threshold,
+            selection_head_straight_through=self.model_config.selection_head_straight_through,
         ).to(self.device)
 
         self.ax.train()
@@ -153,27 +160,94 @@ class HyperSteer(Model, TrainerMixin):
             "include_sentence_in_embedding", False
         )
 
-    def setup_model(self, training_args, model_config, **kwargs):
-        """Setup the model for training."""
+    def setup_model(self):
+        """
+        Setup the model for training.
+        # TODO: distributed training
+        """
+        # Load the concept embedding from the checkpoint
         self.concept_embedding.train()
         self.ax.train()
 
-    def setup_optimizer(self, training_args):
+    def setup_optimizer(self):
         """Setup and return the optimizer."""
+        _param_groups = [
+            {
+                "params": self.concept_embedding.parameters(),
+                "lr": self.training_args.lr,
+            },
+        ]
+
+        if self.model_config.use_selection_head:
+            _param_groups.append(
+                {
+                    "params": [
+                        p for n, p in self.ax.named_parameters() if "temperature" in n
+                    ],
+                    "lr": self.model_config.temperature_lr,
+                }
+            )
+            _param_groups.append(
+                {
+                    "params": [
+                        p
+                        for n, p in self.ax.named_parameters()
+                        if "temperature" not in n
+                    ],
+                    "lr": self.training_args.lr,
+                }
+            )
+
         optimizer = torch.optim.AdamW(
-            self.concept_embedding.parameters(),
-            lr=training_args.lr,
-            weight_decay=training_args.weight_decay,
+            _param_groups, weight_decay=self.training_args.weight_decay
         )
         return optimizer
 
-    def get_trainable_parameters(self):
+    def get_trainable_parameters(self) -> list[nn.Parameter]:
         """Return parameters that should be included in gradient clipping."""
-        return self.concept_embedding.parameters()
+        return list(self.ax.parameters()) + list(self.concept_embedding.parameters())
 
-    def get_watchable_modules(self):
+    def get_watchable_modules(self) -> list[nn.Module]:
         """Return modules that should be watched by wandb."""
         return [self.ax, self.concept_embedding]
+
+    def post_backward(
+        self,
+        step_outputs,
+        lr_scheduler,
+        optimizer,
+        global_step,
+    ) -> dict[str, Any]:
+        # Gradient clipping
+        ax_grad_norm = torch.nn.utils.clip_grad_norm_(
+            self.ax.parameters(),
+            self.training_args.max_grad_norm,
+        )
+        concept_embedding_grad_norm = torch.nn.utils.clip_grad_norm_(
+            self.concept_embedding.parameters(),
+            self.training_args.max_grad_norm,
+        )
+        _all_params = list(self.ax.parameters()) + list(
+            self.concept_embedding.parameters()
+        )
+        total_grad_norm = torch.nn.utils.clip_grad_norm_(
+            _all_params,
+            self.training_args.max_grad_norm,
+        )
+        step_outputs[("grad_norms", "ax")] = ax_grad_norm
+        step_outputs[("grad_norms", "concept_embedding")] = concept_embedding_grad_norm
+        step_outputs[("grad_norms", "total")] = total_grad_norm
+        step_outputs[("lr", "main")] = lr_scheduler.get_last_lr()[0]
+        if self.model_config.selection_head_learnable_temperature:
+            step_outputs[("lr", "temperature")] = lr_scheduler.get_last_lr()[-1]
+
+        if (
+            self.model_config.selection_head_anneal_temperature
+            and not self.model_config.selection_head_learnable_temperature
+        ):
+            self.ax.selection_head.step_temperature(global_step)
+
+        return step_outputs
 
     def train_step(self, batch, global_step):
         """Perform a single training step."""
@@ -193,22 +267,36 @@ class HyperSteer(Model, TrainerMixin):
         # Compute main loss
         loss = self.compute_main_loss_and_outputs(inputs, unit_locations, subspaces)
 
-        step_outputs = {"loss": loss}
+        step_outputs = {}
 
         # Add selection sparsity loss if enabled
         if self.model_config.use_selection_head:
             mask = self.ax_model.full_intervention_outputs[0].payload["mask"]
-            selection_sparsity_loss = self.compute_selection_sparsity_loss(
-                gathered_sparse_mask=mask,
-                attention_mask=inputs["attention_mask"],
-                locs=inputs["intervention_locations"],
-            )
-            loss += selection_sparsity_loss * self.training_args.selection_l1_loss_coeff
-            step_outputs["selection_sparsity_loss"] = selection_sparsity_loss
-            step_outputs["loss"] = loss  # Update with total loss
+            with (
+                nullcontext()
+                if self.model_config.compute_sparsity_loss
+                else torch.no_grad()
+            ):
+                selection_sparsity_loss = self.compute_selection_sparsity_loss(
+                    gathered_sparse_mask=mask,
+                    attention_mask=inputs["attention_mask"],
+                    locs=inputs["intervention_locations"],
+                )
+            if self.model_config.compute_sparsity_loss:
+                loss += (
+                    selection_sparsity_loss * self.model_config.selection_l1_loss_coeff
+                )
+                step_outputs[("loss", "mask_l1")] = selection_sparsity_loss
+
+            with torch.no_grad():
+                step_outputs[("metrics", "mask_sparsity")] = (
+                    1 - selection_sparsity_loss.mean()
+                )
 
             # Visualize sparse mask at the configured frequency
             self._visualize_training_mask(mask, inputs, global_step)
+
+        step_outputs[("loss", "main")] = loss
 
         return step_outputs
 
@@ -270,7 +358,7 @@ class HyperSteer(Model, TrainerMixin):
         )
 
         steering_loss = cf_out.loss
-        step_outputs = {"loss": steering_loss}
+        step_outputs = {("loss", "main"): steering_loss}
 
         # Handle selection head validation
         if self.model_config.use_selection_head:
@@ -282,7 +370,7 @@ class HyperSteer(Model, TrainerMixin):
                 attention_mask=inputs["attention_mask"],
                 locs=inputs["intervention_locations"],
             )
-            step_outputs["selection_sparsity_loss"] = selection_sparsity_loss
+            step_outputs[("loss", "mask_l1")] = selection_sparsity_loss
 
             # Visualize validation mask
             self._visualize_validation_mask(gathered_sparse_mask, inputs, global_step)
@@ -307,45 +395,12 @@ class HyperSteer(Model, TrainerMixin):
         self.ax._reset_v()
         return step_outputs
 
-    def log_metrics(self, metrics, mode="train"):
-        """Log metrics to wandb and logger."""
-        # Prepare log dictionary
-        log_dict = {}
-
-        for key, value in metrics.items():
-            if key == "global_step":
-                log_dict["counters/step"] = value
-            elif key == "lr":
-                log_dict["counters/lr"] = value
-            elif key == "grad_norm":
-                log_dict[f"{mode}/main_grad_norm"] = (
-                    value.item() if hasattr(value, "item") else float(value)
-                )
-            elif key == "loss":
-                log_dict[f"{mode}/loss"] = (
-                    value.detach().item() if hasattr(value, "detach") else float(value)
-                )
-            elif key.endswith("_loss"):
-                log_dict[f"{mode}/{key}"] = (
-                    value.detach().item() if hasattr(value, "detach") else float(value)
-                )
-            elif key in ["val_step", "global_val_step"]:
-                log_dict[key] = value
-            else:
-                log_dict[f"{mode}/{key}"] = value
-
-        # Log to wandb
-        if wandb.run and (not dist.is_initialized() or dist.get_rank() == 0):
-            wandb.log(log_dict)
-
-        logger.info(log_dict)
-
-    def on_validation_start(self, global_step):
+    def on_validation_start(self):
         """Called at the start of validation."""
         self.concept_embedding.eval()
         self.ax.eval()
 
-    def on_validation_end(self, global_step):
+    def on_validation_end(self):
         """Called at the end of validation."""
         self.concept_embedding.train()
         self.ax.train()
@@ -366,7 +421,7 @@ class HyperSteer(Model, TrainerMixin):
             concept_strings.append(concept_str)
 
         self._visualize_token_heatmap(
-            mask.squeeze(),
+            mask.squeeze(-1),
             step=global_step,
             dump_dir=self.dump_dir or "assets/cache/sparse_masks",
             batch_tokens=batch_tokens,

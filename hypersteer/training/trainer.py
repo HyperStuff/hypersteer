@@ -1,14 +1,15 @@
+import gc
 import itertools
 from abc import ABC, abstractmethod
 from typing import Any
 
 import torch
-import torch.nn.utils
-import wandb
+import torch.distributed as dist
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from transformers import get_scheduler
 
+import wandb
 from hypersteer.utils.configs import ModelConfig, TrainingArgs, WandbConfig
 from hypersteer.utils.helpers import get_logger, get_rank, get_world_size
 
@@ -19,25 +20,22 @@ class TrainerMixin(ABC):
     """Abstract mixin that defines the interface for trainable models."""
 
     @abstractmethod
-    def setup_model(
-        self, training_args: TrainingArgs, model_config: ModelConfig, **kwargs
-    ) -> None:
+    def setup_model(self, **kwargs) -> None:
         """Setup the model for training."""
         pass
 
     @abstractmethod
-    def setup_optimizer(self, training_args: TrainingArgs) -> torch.optim.Optimizer:
+    def setup_optimizer(self, **kwargs) -> torch.optim.Optimizer:
         """Setup and return the optimizer."""
         pass
 
     @abstractmethod
-    def train_step(self, batch: dict[str, Any], global_step: int) -> dict[str, Any]:
+    def train_step(self, batch: dict[str, Any]) -> dict[str, Any]:
         """
         Perform a single training step.
 
         Args:
             batch: The input batch
-            global_step: Current global step
 
         Returns:
             Dictionary containing loss and any other metrics
@@ -45,23 +43,46 @@ class TrainerMixin(ABC):
         pass
 
     @abstractmethod
-    def val_step(self, batch: dict[str, Any], global_step: int) -> dict[str, Any]:
+    def val_step(self, batch: dict[str, Any]) -> dict[str, Any]:
         """
         Perform a single validation step.
 
         Args:
             batch: The input batch
-            global_step: Current global step
 
         Returns:
             Dictionary containing loss and any other metrics
         """
         pass
 
-    @abstractmethod
-    def log_metrics(self, metrics: dict[str, Any], mode: str = "train") -> None:
+    def log_metrics(self, metrics, mode="train"):
         """Log metrics to wandb and logger."""
-        pass
+        # Prepare log dictionary
+        log_dict = {}
+
+        for key_tuple, value in metrics.items():
+            section, keyname = key_tuple
+            # Determine the log key format based on section
+            # Special case for 'counters' section (e.g., step, lr)
+            if section == "counters":
+                log_key = f"{section}/{keyname}"
+            # General case: {section}_{mode}/keyname
+            else:
+                log_key = f"{section}_{mode}/{keyname}"
+
+            # Handle value extraction (for tensors, etc.)
+            if isinstance(value, torch.Tensor):
+                processed_value = value.detach().item()
+            else:
+                processed_value = float(value)  # Ensure it's a standard float
+
+            log_dict[log_key] = processed_value
+
+        # Log to wandb
+        if wandb.run and (not dist.is_initialized() or dist.get_rank() == 0):
+            wandb.log(log_dict)
+
+        logger.info(log_dict)
 
     @abstractmethod
     def get_trainable_parameters(self):
@@ -89,14 +110,14 @@ class Trainer:
     """Generic trainer that works with any model implementing TrainerMixin."""
 
     def __init__(
-        self,
+        self: "Trainer",
         model: TrainerMixin,
         training_args: TrainingArgs,
         model_config: ModelConfig,
         wandb_config: WandbConfig | None = None,
         device=None,
         seed=42,
-    ):
+    ) -> None:
         self.model = model
         self.training_args = training_args
         self.model_config = model_config
@@ -118,14 +139,16 @@ class Trainer:
         self.is_distributed = self.world_size > 1
 
     def setup_training(
-        self, train_dataloader: DataLoader, dev_dataloader: DataLoader | None = None
-    ):
+        self: "Trainer",
+        train_dataloader: DataLoader,
+        dev_dataloader: DataLoader | None = None,
+    ) -> tuple[int, int]:
         """Setup training components."""
         # Setup model
-        self.model.setup_model(self.training_args, self.model_config)
+        self.model.setup_model()
 
         # Setup optimizer
-        self.optimizer = self.model.setup_optimizer(self.training_args)
+        self.optimizer = self.model.setup_optimizer()
 
         # Determine training configuration
         use_step_limit = self.training_args.n_steps > 0
@@ -217,7 +240,7 @@ class Trainer:
 
                 # Forward pass
                 step_outputs = self.model.train_step(batch, self.global_step)
-                loss = step_outputs["loss"]
+                loss = step_outputs[("loss", "main")]
 
                 # Backward pass
                 scaled_loss = loss / self.training_args.gradient_accumulation_steps
@@ -226,24 +249,19 @@ class Trainer:
 
                 # Optimizer step
                 if accum_counter == self.training_args.gradient_accumulation_steps:
-                    # Gradient clipping
-                    if (
-                        hasattr(self.training_args, "max_grad_norm")
-                        and self.training_args.max_grad_norm > 0
-                    ):
-                        grad_norm = torch.nn.utils.clip_grad_norm_(
-                            self.model.get_trainable_parameters(),
-                            self.training_args.max_grad_norm,
-                        )
-                        step_outputs["grad_norm"] = grad_norm
+                    step_outputs = self.model.post_backward(
+                        step_outputs,
+                        self.lr_scheduler,
+                        self.optimizer,
+                        self.global_step,
+                    )
+                    accum_counter = 0
 
                     self.optimizer.step()
                     self.lr_scheduler.step()
-                    accum_counter = 0
 
                     # Log metrics
-                    step_outputs["lr"] = self.lr_scheduler.get_last_lr()[0]
-                    step_outputs["global_step"] = self.global_step
+                    step_outputs[("counters", "global_step")] = self.global_step
                     self.model.log_metrics(step_outputs, mode="train")
 
                 step += 1
@@ -265,11 +283,12 @@ class Trainer:
             self.model.on_train_epoch_end(epoch)
             epoch += 1
 
+    @torch.no_grad()
     def validate(self, dev_dataloader: DataLoader):
         """Run validation."""
         logger.info(f"Running validation at step {self.global_step}")
 
-        self.model.on_validation_start(self.global_step)
+        self.model.on_validation_start()
 
         # Set to eval mode
         if hasattr(self.model, "eval"):
@@ -277,15 +296,14 @@ class Trainer:
 
         all_metrics = []
 
-        with torch.no_grad():
-            for batch in dev_dataloader:
-                step_outputs = self.model.val_step(batch, self.global_val_step)
-                all_metrics.append(step_outputs)
+        for batch in dev_dataloader:
+            step_outputs = self.model.val_step(batch, self.global_step)
+            all_metrics.append(step_outputs)
 
         # Aggregate metrics
         aggregated_metrics = self._aggregate_metrics(all_metrics)
-        aggregated_metrics["val_step"] = self.global_step
-        aggregated_metrics["global_val_step"] = self.global_val_step
+        aggregated_metrics[("counters", "val_step")] = self.global_step
+        aggregated_metrics[("counters", "global_val_step")] = self.global_val_step
 
         # Log validation metrics
         self.model.log_metrics(aggregated_metrics, mode="val")
@@ -296,9 +314,10 @@ class Trainer:
         if hasattr(self.model, "train"):
             self.model.train()
 
-        self.model.on_validation_end(self.global_step)
+        self.model.on_validation_end()
 
         # Cleanup
+        gc.collect()
         torch.cuda.empty_cache()
 
     def _aggregate_metrics(self, metrics_list):
@@ -307,7 +326,7 @@ class Trainer:
             return {}
 
         aggregated = {}
-        for key in metrics_list[0].keys():
+        for _, key in metrics_list[0].keys():
             if key in ["loss", "grad_norm"] or key.endswith("_loss"):
                 # Average numerical metrics
                 values = [

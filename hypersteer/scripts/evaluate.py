@@ -11,22 +11,28 @@ import httpx
 import hydra
 import numpy as np
 import pandas as pd
-import wandb
 from dotenv import load_dotenv
 from omegaconf import DictConfig, OmegaConf
 from openai import AsyncOpenAI
 
+import wandb
 from hypersteer import LMJudgeEvaluator, PerplexityEvaluator, WinRateEvaluator
-from hypersteer.templates.html_templates import (
-    generate_html_with_highlight_text,
+from hypersteer.data.utils import load_dataset_for_inference
+from hypersteer.utils.configs import (
+    ExperimentConfig,
+    config_to_pydantic,
 )
-from hypersteer.utils.configs import ExperimentConfig, config_to_pydantic
 from hypersteer.utils.constants import (
     EVAL_STATE_FILE,
     STEERING_EXCLUDE_MODELS,
 )
 from hypersteer.utils.dry_run import patch_client
-from hypersteer.utils.helpers import dump_json, get_logger
+from hypersteer.utils.helpers import (
+    dump_json,
+    get_logger,
+    load_state,
+    process_jsonl_file,
+)
 from hypersteer.utils.language_models import LanguageModel
 from hypersteer.utils.plot_utils import (
     plot_metrics,
@@ -265,35 +271,6 @@ def save_results(
         combined_df.to_parquet(df_path, index=False)
 
 
-def load_state(dump_dir, mode, eval_run="evaluate"):
-    """
-    Load the state from a file if it exists.
-
-    Args:
-        dump_dir (str): The directory to load the state file from.
-
-    Returns:
-        dict: The loaded state dictionary, or None if no state file exists.
-    """
-    assert mode in ["latent", "steering"], "Invalid mode"
-    state_path = os.path.join(dump_dir, eval_run, f"{mode}_{EVAL_STATE_FILE}")
-    if os.path.exists(state_path):
-        with open(state_path, "rb") as f:
-            return pickle.load(f)
-    return None
-
-
-def combine_scores_per_concept(concept_data):
-    """Combine scores from concept and following evaluators for each method."""
-    return concept_data["results"]["LMJudgeEvaluator"]
-
-
-def process_jsonl_file(jsonl_lines):
-    for data in jsonl_lines:
-        data["results"]["LMJudgeEvaluator"] = combine_scores_per_concept(data)
-    return jsonl_lines
-
-
 def plot_steering(
     aggregated_results, dump_dir, report_to=[], wandb_name=None, mode=None
 ):
@@ -340,6 +317,113 @@ def plot_steering(
         )
     except Exception as e:
         logger.warning(f"Failed to plot: {e}")
+
+
+def process_mask_sparsity_metrics(
+    steering_df, dump_dir, eval_run, args: ExperimentConfig
+):
+    """
+    Calculate and log mask sparsity (L1 norm) metrics and plots for all columns ending with '_sparsity'.
+    """
+    import matplotlib.pyplot as plt
+
+    sparsity_metrics = {}
+    sparsity_cols = [col for col in steering_df.columns if col.endswith("_sparsity")]
+    if not sparsity_cols:
+        logger.warning(
+            "No columns ending with '_sparsity' found in steering_data.parquet."
+        )
+        return
+    for col in sparsity_cols:
+        model_name = col.replace("_sparsity", "")
+
+        def reduce_sparsity(x):
+            # Handle cases where sparsity might be stored as list/ndarray per example
+            if isinstance(x, list) or isinstance(x, np.ndarray):
+                return np.mean(x)
+            return x
+
+        reduced_sparsity = steering_df[col].dropna().map(reduce_sparsity)
+        avg_sparsity = reduced_sparsity.mean()
+        std_sparsity = reduced_sparsity.std()
+        sparsity_metrics[f"eval_mean_mask_sparsity/{model_name}"] = avg_sparsity
+        sparsity_metrics[f"eval_std_mask_sparsity/{model_name}"] = std_sparsity
+        logger.warning(
+            f"Average mask sparsity for {model_name}: {avg_sparsity:.4f} (std: {std_sparsity:.4f})"
+        )
+        # --- Save histogram plot to disk ---
+        plt.figure(figsize=(8, 5))
+        plt.hist(reduced_sparsity, bins=30, color="skyblue", edgecolor="black")
+        plt.title(
+            f"Mask Sparsity for {model_name}\nMean: {avg_sparsity:.4f}, Std: {std_sparsity:.4f}"
+        )
+        plt.xlabel("Per-example mask sparsity")
+        plt.ylabel("Count")
+        plt.grid(True, alpha=0.3)
+        # Optionally, add text box with stats
+        plt.gca().text(
+            0.98,
+            0.95,
+            f"Mean: {avg_sparsity:.4f}\nStd: {std_sparsity:.4f}",
+            transform=plt.gca().transAxes,
+            fontsize=10,
+            verticalalignment="top",
+            horizontalalignment="right",
+            bbox=dict(boxstyle="round", facecolor="white", alpha=0.7),
+        )
+        plot_path = Path(dump_dir) / eval_run / f"mask_sparsity_{model_name}.png"
+        plt.tight_layout()
+        plt.savefig(plot_path)
+        plt.close()
+        logger.warning(f"Saved mask sparsity histogram to {plot_path}")
+        # Log histogram to wandb if enabled
+        if args.evaluate.report_to == "wandb" and wandb.run:
+            wandb.log(
+                {
+                    f"eval/mask_sparsity_hist/{model_name}": wandb.Histogram(
+                        reduced_sparsity.values
+                    )
+                }
+            )
+        # Group by factor and plot boxplot/violinplot
+        if "factor" in steering_df.columns:
+            import seaborn as sns
+
+            factor_vals = steering_df["factor"]
+            # Align factor and sparsity values (dropna alignment)
+            factor_aligned = factor_vals[reduced_sparsity.index]
+            plot_df = pd.DataFrame(
+                {
+                    "factor": factor_aligned,
+                    "sparsity": reduced_sparsity.values,
+                }
+            )
+            plt.figure(figsize=(8, 5))
+            sns.boxplot(x="factor", y="sparsity", data=plot_df, color="skyblue")
+            plt.title(f"Mask Sparsity by Steering Factor for {model_name}")
+            plt.xlabel("Steering Factor")
+            plt.ylabel("Mask Sparsity")
+            plt.grid(True, alpha=0.3)
+            boxplot_path = (
+                Path(dump_dir) / eval_run / f"mask_sparsity_boxplot_{model_name}.png"
+            )
+            plt.tight_layout()
+            plt.savefig(boxplot_path)
+            plt.close()
+            logger.warning(f"Saved mask sparsity boxplot to {boxplot_path}")
+            # Log boxplot to wandb
+            if args.evaluate.report_to == "wandb" and wandb.run:
+                wandb.log(
+                    {
+                        f"eval/mask_sparsity_boxplot/{model_name}": wandb.Image(
+                            str(boxplot_path)
+                        )
+                    }
+                )
+    # Log to wandb if enabled
+    if args.evaluate.report_to == "wandb" and wandb.run:
+        wandb.log(sparsity_metrics)
+        logger.warning("Logged average mask sparsity to wandb.")
 
 
 def eval_steering_single_task(args_tuple):
@@ -589,6 +673,22 @@ def eval_steering(
         logger.warning(f"Failed to load steering.jsonl: {e}. Aborting evaluation.")
         return
 
+    # Calculate and log average mask sparsity
+    steering_data_path = Path(dump_dir) / infer_run / "steering_data.parquet"
+    if steering_data_path.exists():
+        steering_df = pd.read_parquet(steering_data_path)
+        sparsity_cols = [
+            col for col in steering_df.columns if col.endswith("_sparsity")
+        ]
+        if sparsity_cols:
+            process_mask_sparsity_metrics(steering_df, dump_dir, eval_run, args)
+        else:
+            logger.warning(
+                "No columns ending with '_sparsity' found in steering_data.parquet."
+            )
+    else:
+        logger.warning(f"Steering data parquet file not found at {steering_data_path}.")
+
     # Aggregate LM reports
     aggregated_lm_report = {
         "total_calls": sum([report["total_calls"] for report in lm_reports]),
@@ -666,109 +766,14 @@ def log_results_to_wandb(
             # Try to load from the saved config
             config_path = Path(dump_dir) / "config.yaml"
             if config_path.exists():
-                from omegaconf import OmegaConf
-
-                from hypersteer.utils.configs import (
-                    ExperimentConfig,
-                    config_to_pydantic,
-                )
-
                 cfg = OmegaConf.load(config_path)
                 args = config_to_pydantic(cfg, ExperimentConfig)
-
-                # Load concept info from dataset
-                from inference import load_dataset_for_inference
-
                 concept_info = load_dataset_for_inference(args)
         except Exception as e:
             logger.warning(f"Could not load concept info from dataset: {e}")
             concept_info = []
 
     concepts = []
-
-    # Process latent results if available
-    if (Path(dump_dir) / eval_run / "latent.jsonl").is_file():
-        latent_path = Path(dump_dir) / eval_run / "latent.jsonl"
-        latent_results = load_jsonl(latent_path)
-        # Check if any model results exist in AUCROCEvaluator
-        lsreft_included = (
-            len(latent_results[0]["results"].get("AUCROCEvaluator", {})) > 0
-        )
-        top_logits_path = Path(dump_dir) / infer_run / "top_logits.jsonl"
-        top_logits_results = (
-            load_jsonl(top_logits_path) if os.path.exists(top_logits_path) else None
-        )
-
-        # Get the first available model name from AUCROCEvaluator results
-        lsreft_model_name = next(
-            iter(latent_results[0]["results"].get("AUCROCEvaluator", {})),
-            None,
-        )
-
-        if concept_info and lsreft_model_name:
-            idx = 0
-            for concept_entry in concept_info:
-                concept = concept_entry["concept"]
-                sae_link = concept_entry["ref"]
-                auc = (
-                    latent_results[idx]["results"]["AUCROCEvaluator"][
-                        lsreft_model_name
-                    ]["roc_auc"]
-                    if lsreft_included
-                    else None
-                )
-                max_act = (
-                    latent_results[idx]["results"]["AUCROCEvaluator"][
-                        lsreft_model_name
-                    ]["max_act"]
-                    if lsreft_included
-                    else None
-                )
-                concepts += [[idx, concept, None, auc, max_act, None, sae_link]]
-                if top_logits_results is not None:
-                    top_logits = top_logits_results[idx]["results"][lsreft_model_name][
-                        "top_logits"
-                    ][0]
-                    neg_logits = top_logits_results[idx]["results"][lsreft_model_name][
-                        "neg_logits"
-                    ][0]
-                    top_table = wandb.Table(
-                        data=[(t[1], t[0]) for t in top_logits],
-                        columns=[
-                            "logits",
-                            "token",
-                        ],
-                    )
-                    neg_table = wandb.Table(
-                        data=[(t[1], t[0]) for t in neg_logits],
-                        columns=[
-                            "logits",
-                            "token",
-                        ],
-                    )
-                    wandb.log(
-                        {
-                            f"positive_logits/{idx}": wandb.plot.bar(
-                                top_table, "token", "logits", title=f"{concept} ({idx})"
-                            )
-                        }
-                    )
-                    wandb.log(
-                        {
-                            f"negative_logits/{idx}": wandb.plot.bar(
-                                neg_table, "token", "logits", title=f"{concept} ({idx})"
-                            )
-                        }
-                    )
-                idx += 1
-
-        # Log token level heatmaps
-        inference_path = Path(dump_dir) / infer_run / "latent_data.parquet"
-        if inference_path.exists():
-            inference_df = pd.read_parquet(inference_path)
-            if lsreft_included:
-                heatmap_html = generate_html_with_highlight_text(inference_df)
-                wandb.log({"latent/token_heatmap": wandb.Html(heatmap_html)})
 
     # Process steering results if available
     if (Path(dump_dir) / eval_run / "steering.jsonl").is_file() and concept_info:
@@ -908,8 +913,6 @@ def run_eval(args: ExperimentConfig, infer_run="inference"):
     if args.wandb.log and args.evaluate.report_to == "wandb":
         # Load concept info for wandb logging
         try:
-            from inference import load_dataset_for_inference
-
             concept_info = load_dataset_for_inference(args)
         except Exception as e:
             logger.warning(f"Could not load concept info for wandb logging: {e}")
@@ -934,7 +937,9 @@ def main(cfg: DictConfig):
     if pretrained_cfg_path.exists():
         logger.info(f"Loading pretrained config from {pretrained_cfg_path}")
         pretrained_cfg = OmegaConf.load(pretrained_cfg_path)
-        config = OmegaConf.merge(pretrained_cfg, config)
+        OmegaConf.set_struct(config, False)
+        config = OmegaConf.merge(config, pretrained_cfg)
+        OmegaConf.set_struct(config, True)
 
     config = config_to_pydantic(config, ExperimentConfig)
     run_eval(config, infer_run=config.evaluate.infer_run or "inference")

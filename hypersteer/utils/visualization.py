@@ -11,8 +11,8 @@ import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-
 import wandb
+
 from hypersteer.utils.helpers import get_logger
 
 logger = get_logger(__name__)
@@ -169,11 +169,8 @@ class Visualizer:
                 if log_to_console:
                     print(f"[viz] Processing sample {i}")
 
-                # Only skip if mask_tensor is completely broken for this sample
-                if mask_tensor.dim() > 2:
-                    vis_mask = mask_tensor[i].float().numpy()
-                else:
-                    vis_mask = mask_tensor.float().numpy()
+                # Assume batch dim is first
+                vis_mask = mask_tensor[i].float().numpy()
 
                 # Skip only if vis_mask is completely empty/invalid
                 if vis_mask.size == 0:

@@ -2,12 +2,44 @@ import hashlib
 import json
 import logging
 import os
+import pickle
 from contextlib import contextmanager
 from os import PathLike
 from pathlib import Path
 
 import torch
 import torch.distributed as dist
+
+from hypersteer.utils.constants import EVAL_STATE_FILE
+
+
+def load_state(dump_dir, mode, eval_run="evaluate"):
+    """
+    Load the state from a file if it exists.
+
+    Args:
+        dump_dir (str): The directory to load the state file from.
+
+    Returns:
+        dict: The loaded state dictionary, or None if no state file exists.
+    """
+    assert mode in ["latent", "steering"], "Invalid mode"
+    state_path = os.path.join(dump_dir, eval_run, f"{mode}_{EVAL_STATE_FILE}")
+    if os.path.exists(state_path):
+        with open(state_path, "rb") as f:
+            return pickle.load(f)
+    return None
+
+
+def combine_scores_per_concept(concept_data):
+    """Combine scores from concept and following evaluators for each method."""
+    return concept_data["results"]["LMJudgeEvaluator"]
+
+
+def process_jsonl_file(jsonl_lines):
+    for data in jsonl_lines:
+        data["results"]["LMJudgeEvaluator"] = combine_scores_per_concept(data)
+    return jsonl_lines
 
 
 @contextmanager

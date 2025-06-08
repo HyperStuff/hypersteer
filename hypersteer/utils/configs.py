@@ -126,6 +126,7 @@ class DatasetConfig(BaseConfigModel):
     hf_ignore_verifications: bool = False
     hf_save_infos: bool = False
     hf_trust_remote_code: bool = False
+    dataset_type: str = "axbench"
 
     # Train and eval sub-configs (override defaults above if specified)
     train: "DatasetConfig" = None
@@ -198,11 +199,22 @@ class ModelConfig(BaseConfigModel):
 
     # Model-specific features
     use_synergy: bool = False
-    use_selection_head: bool = False
-    use_selection_ln: bool = True
-    selection_l1_loss_coeff: float = 1e-3
     include_sentence_in_embedding: bool = False
+    use_selection_head: bool = False
+    selection_l1_loss_coeff: float = 1e-3
+    use_selection_ln: bool = True
+    compute_sparsity_loss: bool = False
+    selection_head_start_temperature: float = 1.0
+    selection_head_end_temperature: float = 0.05
+    selection_head_learnable_temperature: bool = False
+    selection_head_anneal_temperature: bool = False
+    selection_head_add_gumbel_noise: bool = True
+    inference_binarize_mask: bool = False
+    selection_head_threshold: float = 0.5
+    selection_head_straight_through: bool = False
+    temperature_lr: float = 0.1
 
+    # Debugging
     debug_print: bool = False
 
     # Visualization configs (model-specific)
@@ -239,7 +251,6 @@ class TrainingArgs(BaseConfigModel):
     coeff_latent_l1_loss: float = 0.005
     reconstruction_loss_ratio: float = 0.0
     steering_loss_ratio: float = 1.0
-    selection_l1_loss_coeff: float = 1e-3
 
     # Data configuration
     binarize_dataset: bool = False

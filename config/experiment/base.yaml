@@ -13,7 +13,7 @@ train:
 inference:
   latent_batch_size: 24
   steering_batch_size: 12
-  steering_factors: [0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.4, 1.6, 1.8, 2.0, 2.5, 3.0, 4.0, 5.0]
+  steering_factors: [0.6, 0.8, 1.0, 1.2, 1.4]
   temperature: 1.0
   batch_infer_hypernetwork: false
   ignore_latent_state: true
@@ -35,7 +35,7 @@ evaluate:
 
 # Dataset overrides
 dataset:
-  max_concepts: 100
+  max_concepts: 50
   num_of_examples: -1
   cache_dir: assets/cache
 
