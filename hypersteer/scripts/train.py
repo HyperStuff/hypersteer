@@ -70,9 +70,6 @@ def main(cfg: DictConfig):
         args.model.target_model_name,
         torch_dtype=torch.bfloat16 if args.train.use_bf16 else None,
     )
-
-    # model_instance.model.layers = model_instance.model.layers[:1]
-
     model_instance = model_instance.eval()
     model_instance.to(device)
 
@@ -187,7 +184,7 @@ def main(cfg: DictConfig):
             tags=args.wandb.tags,
             group=args.wandb.group,
             notes=args.wandb.notes,
-            name=f"{model_config.model_name}_{run_name}_{max(concept_ids) if concept_ids else 0}",
+            name=f"{model_config.model_name}_{run_name}",
             config={
                 "experiment": args.model_dump(),
                 "model": model_config.model_dump(),

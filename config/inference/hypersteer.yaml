@@ -11,9 +11,7 @@ ignore_latent_state: true
 ignore_steering_state: true
 
 # Enhanced steering factors for hypersteer
-steering_factors: [
-  0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.4, 1.6, 1.8, 2.0, 2.5, 3.0, 4.0, 5.0
-]
+steering_factors: [0.8, 1.0, 1.2, 1.4, 1.6]
 
 # Enhanced factor selection for hypersteer
 factor_selection:
@@ -27,4 +25,4 @@ factor_selection:
   discrete_steps: 30
   log_scale: false
   capture_all_metrics: true
-  n_startup_trials: 5 
+  n_startup_trials: 5

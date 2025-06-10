@@ -5,7 +5,7 @@ from collections import namedtuple
 import pandas as pd
 from datasets import Dataset, DatasetDict, concatenate_datasets, load_dataset
 
-from hypersteer.utils.constants import CHAT_MODELS, EMPTY_CONCEPT
+from hypersteer.utils.constants import EMPTY_CONCEPT
 from hypersteer.utils.helpers import get_logger
 from hypersteer.utils.language_models import LanguageModel
 from hypersteer.utils.model_utils import get_suffix_length
@@ -126,6 +126,7 @@ def process_dataset_for_training(
     max_num_of_examples=None,
     negative_example_ratio=1,
     replace_negative_description=True,
+    is_chat_model=False,
 ):
     """
     Process HuggingFace dataset for training using map functions.
@@ -145,7 +146,6 @@ def process_dataset_for_training(
         Processed HuggingFace Dataset ready for training
     """
     suffix_length, suffix_str = get_suffix_length(tokenizer)
-    is_chat_model = model_name in CHAT_MODELS if model_name else False
 
     # Filter positive and negative examples
     positive_dataset = dataset.filter(
@@ -464,6 +464,7 @@ class AxbenchDatasetFactory(BaseDatasetFactory):
                 max_num_of_examples=max_num_of_examples or self.num_of_examples,
                 negative_example_ratio=negative_example_ratio,
                 replace_negative_description=replace_negative_description,
+                is_chat_model=self.is_chat_model,
             )
             logger.info(
                 f"Processed dataset with {len(dataset)} examples ready for training"

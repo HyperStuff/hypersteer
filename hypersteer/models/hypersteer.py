@@ -148,9 +148,7 @@ class HyperSteer(Model, TrainerMixin):
             with set_default_device(self.device):
                 self.concept_embedding = HypernetModel(config=hypernet_config)
 
-        self.concept_embedding = self.concept_embedding.to(
-            self.device, dtype=torch.bfloat16
-        )
+        self.concept_embedding = self.concept_embedding.to(torch.bfloat16)
         # Initialize empty concept mapping - will be populated from dataset
         self.concept_id_to_text = {}
 
@@ -289,9 +287,7 @@ class HyperSteer(Model, TrainerMixin):
                 step_outputs[("loss", "mask_l1")] = selection_sparsity_loss
 
             with torch.no_grad():
-                step_outputs[("metrics", "mask_sparsity")] = (
-                    1 - selection_sparsity_loss.mean()
-                )
+                step_outputs[("metrics", "mask_sparsity")] = 1 - selection_sparsity_loss
 
             # Visualize sparse mask at the configured frequency
             self._visualize_training_mask(mask, inputs, global_step)
@@ -300,6 +296,7 @@ class HyperSteer(Model, TrainerMixin):
 
         return step_outputs
 
+    @torch.no_grad()
     def val_step(self, batch, global_step):
         """Perform a single validation step."""
         inputs = {k: v.to(self.device) for k, v in batch.items()}
@@ -495,6 +492,7 @@ class HyperSteer(Model, TrainerMixin):
                 inputs["attention_mask"],
                 inputs["labels"],
                 inputs["intervention_locations"],
+                inputs["concept_input_ids"],
                 self.tokenizer,
             )
 

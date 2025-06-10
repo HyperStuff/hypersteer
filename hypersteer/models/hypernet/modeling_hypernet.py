@@ -4,7 +4,6 @@ from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
-from transformers.activations import FastGELUActivation
 from transformers.cache_utils import HybridCache
 from transformers.modeling_outputs import (
     BaseModelOutputWithPast,
@@ -21,8 +20,6 @@ from .configuration_hypernet import HypernetConfig
 from .layers import HypernetDecoderLayer
 
 logger = logging.get_logger(__name__)
-
-# T = TypeVar("T", bound="LlamaInterpretor")
 
 
 @dataclass
@@ -70,30 +67,6 @@ class HypernetPreTrainedModel(PreTrainedModel):
         return config
 
 
-class UnembeddingMLP(nn.Module):
-    def __init__(self, hidden_size, intermediate_size, output_size, normalize=False):
-        super().__init__()
-        self.hidden_size = hidden_size
-        self.intermediate_size = intermediate_size
-        self.output_size = output_size
-
-        self.normalize = normalize
-
-        self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
-        self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
-        self.down_proj = nn.Linear(self.intermediate_size, self.output_size, bias=True)
-        self.act_fn = FastGELUActivation()
-
-        self.norm = nn.LayerNorm(self.output_size, eps=1e-5) if self.normalize else None
-
-    def forward(self, x):
-        down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
-        if self.norm is not None:
-            down_proj = self.norm(down_proj)
-
-        return down_proj
-
-
 class HypernetModel(HypernetPreTrainedModel):
     """
     Transformer decoder consisting of *config.num_hidden_layers* layers. Each layer is a [`Gemma2DecoderLayer`]
@@ -117,7 +90,6 @@ class HypernetModel(HypernetPreTrainedModel):
             ]
         )
         self.norm = Gemma2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-
         self.regression_head = nn.Linear(config.hidden_size, config.hidden_size)
 
         self.gradient_checkpointing = False

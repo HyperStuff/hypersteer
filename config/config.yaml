@@ -55,6 +55,3 @@ hydra:
     env_set:
       OPENAI_DRY_RUN: 0
       TOKENIZERS_PARALLELISM: false
-
-# Allow config overrides
-_target_: omegaconf.DictConfi

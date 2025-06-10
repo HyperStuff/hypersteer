@@ -290,10 +290,6 @@ class Trainer:
 
         self.model.on_validation_start()
 
-        # Set to eval mode
-        if hasattr(self.model, "eval"):
-            self.model.eval()
-
         all_metrics = []
 
         for batch in dev_dataloader:
