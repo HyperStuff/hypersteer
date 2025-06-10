@@ -184,7 +184,7 @@ def main(cfg: DictConfig):
             tags=args.wandb.tags,
             group=args.wandb.group,
             notes=args.wandb.notes,
-            name=f"{model_config.model_name}_{run_name}_{max(concept_ids) if concept_ids else 0}",
+            name=f"{model_config.model_name}_{run_name}",
             config={
                 "experiment": args.model_dump(),
                 "model": model_config.model_dump(),
