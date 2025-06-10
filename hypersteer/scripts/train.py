@@ -70,9 +70,6 @@ def main(cfg: DictConfig):
         args.model.target_model_name,
         torch_dtype=torch.bfloat16 if args.train.use_bf16 else None,
     )
-
-    # model_instance.model.layers = model_instance.model.layers[:1]
-
     model_instance = model_instance.eval()
     model_instance.to(device)
 

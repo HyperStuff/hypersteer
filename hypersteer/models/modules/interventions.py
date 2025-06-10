@@ -75,6 +75,20 @@ class SelectionHead(nn.Module):
         if self.ln:
             latent = self.ln(latent)
 
+        with torch.no_grad():
+            x_stats = {
+                "min": x.min().item(),
+                "max": x.max().item(),
+                "mean": x.mean().item(),
+            }
+            v_stats = {
+                "min": v.min().item(),
+                "max": v.max().item(),
+                "mean": v.mean().item(),
+            }
+            print(f"x stats: {x_stats}")
+            print(f"v stats: {v_stats}")
+
         _temperature = self._temperature.clip(
             min=self.end_temperature - eps, max=self.start_temperature + eps
         )
@@ -139,7 +153,6 @@ class HyperAdditiveIntervention(
             if self.use_selection
             else 1
         )
-
         output = base + mask * mag * self.v.unsqueeze(dim=1)
 
         return PayloadInterventionOutput(
