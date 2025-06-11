@@ -1,4 +1,5 @@
 import gc
+import json
 import os
 import random
 from contextlib import nullcontext
@@ -643,21 +644,104 @@ class HyperSteer(Model, TrainerMixin):
             sampler = None
         return train_dataloader, sampler
 
-    def save(self, dump_dir, **kwargs):
+    def save(self, **kwargs):
         model_name = kwargs.get("model_name", self.__str__())
-        weight_file = os.path.join(dump_dir, f"{model_name}_weight.safetensors")
-        self.concept_embedding.cpu()
+        _step = kwargs.get("global_step")
+        sampler = kwargs.get("sampler", None)
+
+        weight_file = os.path.join(
+            self.dump_dir, f"step_{_step}", f"{model_name}_weight.safetensors"
+        )
+        os.makedirs(os.path.dirname(weight_file), exist_ok=True)
+
+        # Save directly without moving to CPU
         save_file(self.concept_embedding.state_dict(), weight_file)
 
         # Save token selection (sparse_selection) if enabled
         if hasattr(self.ax, "selection_head") and self.model_config.use_selection_head:
-            path = os.path.join(dump_dir, f"{model_name}_selection_head.safetensors")
+            path = os.path.join(
+                self.dump_dir, f"{model_name}_selection_head.safetensors"
+            )
+            os.makedirs(os.path.dirname(path), exist_ok=True)
             save_file(self.ax.selection_head.state_dict(), path)
             logger.debug(f"Saved selection head to {path}")
 
-    def load(self, dump_dir=None, **kwargs):
+        optimizer = kwargs.get("optimizer")
+        scheduler = kwargs.get("scheduler")
+        optimizer_file = os.path.join(
+            self.dump_dir, "train", f"step_{_step}", "optimizer.pt"
+        )
+        scheduler_file = os.path.join(
+            self.dump_dir, "train", f"step_{_step}", "scheduler.pt"
+        )
+        rng_states_file = os.path.join(
+            self.dump_dir, "train", f"step_{_step}", "rng_states.pt"
+        )
+        trainer_state_file = os.path.join(
+            self.dump_dir, "train", f"step_{_step}", "trainer_state.json"
+        )
+        for path in [
+            optimizer_file,
+            scheduler_file,
+            rng_states_file,
+            trainer_state_file,
+        ]:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+        torch.save(
+            optimizer.state_dict(),
+            optimizer_file,
+        )
+        torch.save(
+            scheduler.state_dict(),
+            scheduler_file,
+        )
+
+        _rng_states = {
+            "torch": torch.get_rng_state(),
+            "cuda": torch.cuda.get_rng_state_all()
+            if torch.cuda.is_available()
+            else None,
+            "numpy": np.random.get_state(),
+            "python": random.getstate(),
+        }
+        torch.save(
+            _rng_states,
+            rng_states_file,
+        )
+
+        # --- WANDB run_id saving ---
+        try:
+            import wandb
+
+            run_id = wandb.run.id if wandb.run else None
+        except ImportError:
+            run_id = None
+
+        _main_state = {
+            "epoch": kwargs.get("epoch"),
+            "global_step": _step,
+            "sampler_epoch": sampler.epoch
+            if sampler is not None and hasattr(sampler, "epoch")
+            else None,
+            "wandb_run_id": run_id,
+        }
+        with open(
+            trainer_state_file,
+            "w",
+        ) as f:
+            json.dump(_main_state, f)
+
+    def load(self, resume_dir=None, **kwargs):
+        if resume_dir is None:
+            raise ValueError("resume_dir must be provided for loading checkpoint.")
         model_name = kwargs.get("model_name", self.__str__())
-        weight_file = os.path.join(dump_dir, f"{model_name}_weight.safetensors")
+        sampler = kwargs.get("sampler", None)
+        weight_file = os.path.join(resume_dir, f"{model_name}_weight.safetensors")
+        optimizer_file = os.path.join(resume_dir, "optimizer.pt")
+        scheduler_file = os.path.join(resume_dir, "scheduler.pt")
+        rng_states_file = os.path.join(resume_dir, "rng_states.pt")
+        trainer_state_file = os.path.join(resume_dir, "trainer_state.json")
+
         self.make_model(**kwargs)
 
         self.concept_embedding.load_state_dict(
@@ -667,12 +751,41 @@ class HyperSteer(Model, TrainerMixin):
 
         # Load token selection (sparse_selection) if enabled and file exists
         if self.model_config.use_selection_head and hasattr(self.ax, "selection_head"):
-            path = os.path.join(dump_dir, f"{model_name}_selection_head.safetensors")
+            path = os.path.join(resume_dir, f"{model_name}_selection_head.safetensors")
             if os.path.exists(path):
                 self.ax.selection_head.load_state_dict(
                     load_file(path, device=str(self.device))
                 )
                 logger.debug(f"Loaded selection head from {path}")
+
+        if os.path.exists(optimizer_file):
+            optimizer = kwargs.get("optimizer")
+            optimizer.load_state_dict(torch.load(optimizer_file))
+        if os.path.exists(scheduler_file):
+            scheduler = kwargs.get("scheduler")
+            scheduler.load_state_dict(torch.load(scheduler_file))
+        if os.path.exists(rng_states_file):
+            rng_states = torch.load(rng_states_file)
+            torch.set_rng_state(rng_states["torch"])
+            if torch.cuda.is_available():
+                torch.cuda.set_rng_state(rng_states["cuda"])
+            np.random.set_state(rng_states["numpy"])
+            random.setstate(rng_states["python"])
+
+        run_id = None
+        global_step = 0
+        epoch = 0
+        if os.path.exists(trainer_state_file):
+            with open(trainer_state_file) as f:
+                state = json.load(f)
+            global_step = state.get("global_step", 0)
+            epoch = state.get("epoch", 0)
+            sampler_epoch = state.get("sampler_epoch", None)
+            run_id = state.get("wandb_run_id", None)
+            if sampler is not None and sampler_epoch is not None:
+                sampler.set_epoch(sampler_epoch)
+
+        return global_step, epoch, run_id
 
     def get_logits(self, concept_id, k=10):
         top_logits, neg_logits = [None], [None]

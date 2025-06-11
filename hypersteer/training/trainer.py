@@ -202,6 +202,7 @@ class Trainer:
         train_dataloader: DataLoader,
         dev_dataloader: DataLoader | None = None,
         train_sampler: DistributedSampler | None = None,
+        resume_from_checkpoint: str | None = None,
     ):
         """Main training loop."""
         num_training_steps, effective_epochs = self.setup_training(
@@ -211,7 +212,17 @@ class Trainer:
 
         # Training state
         accum_counter = 0
-        epoch = 0
+
+        if resume_from_checkpoint is not None:
+            global_step, epoch, _ = self.model.load(
+                resume_dir=resume_from_checkpoint,
+                optimizer=self.optimizer,
+                scheduler=self.lr_scheduler,
+                sampler=train_sampler,
+            )
+        else:
+            epoch = 0
+            global_step = 0
 
         # Training loop
         while epoch < effective_epochs:
@@ -223,9 +234,15 @@ class Trainer:
             train_iter = itertools.cycle(train_dataloader)
             step = 0
 
+            # If resuming from checkpoint, skip to the correct step
+            if epoch == epoch and global_step > 0:
+                step = global_step % len(train_dataloader)
+                for _ in range(step):
+                    next(train_iter)
+
             while step < len(train_dataloader):
                 # Check if we've reached the step limit
-                if use_step_limit and self.global_step >= num_training_steps:
+                if use_step_limit and global_step >= num_training_steps:
                     logger.info(
                         f"Reached step limit of {num_training_steps} steps. Terminating training."
                     )
@@ -239,7 +256,7 @@ class Trainer:
                     self.optimizer.zero_grad()
 
                 # Forward pass
-                step_outputs = self.model.train_step(batch, self.global_step)
+                step_outputs = self.model.train_step(batch, global_step)
                 loss = step_outputs[("loss", "main")]
 
                 # Backward pass
@@ -253,7 +270,7 @@ class Trainer:
                         step_outputs,
                         self.lr_scheduler,
                         self.optimizer,
-                        self.global_step,
+                        global_step,
                     )
                     accum_counter = 0
 
@@ -261,11 +278,11 @@ class Trainer:
                     self.lr_scheduler.step()
 
                     # Log metrics
-                    step_outputs[("counters", "global_step")] = self.global_step
+                    step_outputs[("counters", "global_step")] = global_step
                     self.model.log_metrics(step_outputs, mode="train")
 
                 step += 1
-                self.global_step += 1
+                global_step += 1
 
                 # Validation
                 if (
@@ -275,6 +292,19 @@ class Trainer:
                     and self.global_step % self.training_args.val_interval == 0
                 ):
                     self.validate(dev_dataloader)
+
+                # Saving
+                if (
+                    self.training_args.save_interval > 0
+                    and global_step % self.training_args.save_interval == 0
+                ):
+                    self.model.save(
+                        global_step=global_step,
+                        epoch=epoch,
+                        optimizer=self.optimizer,
+                        scheduler=self.lr_scheduler,
+                        sampler=train_sampler,
+                    )
 
                 # Cleanup
                 del batch, step_outputs, loss, scaled_loss

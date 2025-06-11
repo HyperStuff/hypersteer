@@ -237,7 +237,7 @@ class TrainingArgs(BaseConfigModel):
     n_epochs: int = 3
     n_steps: int = -1
     val_interval: int = 100
-    checkpoint_per_step: int | None = None
+    save_interval: int = 0
 
     # Optimization parameters
     lr: float = 0.01

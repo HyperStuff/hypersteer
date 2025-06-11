@@ -1,9 +1,9 @@
 from collections.abc import Callable
 from typing import Generic, TypeVar
 
-from hypersteer.models.base import BaseModel
+from hypersteer.models.model import Model
 
-T = TypeVar("T", bound=BaseModel)
+T = TypeVar("T", bound=Model)
 
 
 class ModelRegistry(Generic[T]):
@@ -31,7 +31,7 @@ class ModelRegistry(Generic[T]):
         return list(cls._models.keys())
 
 
-def get_model(model_type: str, **kwargs) -> BaseModel:
+def get_model(model_type: str, **kwargs) -> Model:
     """
     Get a model instance by type.
 

@@ -2,6 +2,7 @@
 # This script takes arguments to specify the dataset and other configurations.
 
 import gc
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -20,7 +21,6 @@ from hypersteer.training import Trainer
 from hypersteer.utils.configs import ExperimentConfig, config_to_pydantic
 from hypersteer.utils.helpers import (
     configure_tokenizer_model,
-    destroy_process_group,
     get_logger,
 )
 
@@ -54,6 +54,9 @@ def main(cfg: DictConfig):
     run_name = datetime.now().strftime("train_%Y%m%d_%H%M%S%f")
     if not args.dump_dir and not args.debug:
         args.dump_dir = Path(args.train.save_dir) / run_name
+        (args.dump_dir / "train").mkdir(parents=True, exist_ok=True)
+    elif args.dump_dir:
+        args.dump_dir = Path(args.dump_dir)
         (args.dump_dir / "train").mkdir(parents=True, exist_ok=True)
 
     # Load tokenizer
@@ -125,11 +128,11 @@ def main(cfg: DictConfig):
         logger.info(f"Training {model_config.model_name} on negative examples")
 
     # Create in-train dev set
-    dev_size = (
-        int(args.dataset.train.dev_size * len(combined_df))
-        if 0 < args.dataset.train.dev_size < 1
-        else min(int(args.dataset.train.dev_size), len(combined_df) // 5)
-    )
+    if args.dataset.train.dev_size > 0:
+        assert 0 < args.dataset.train.dev_size < 1
+        dev_size = int(args.dataset.train.dev_size * len(combined_df))
+    else:
+        dev_size = 0
 
     # Shuffle the dataframe before splitting
     combined_df = combined_df.sample(
@@ -176,9 +179,17 @@ def main(cfg: DictConfig):
             shuffle=False,
         )
 
+    wandb_run_id = None
+    if args.train.resume_from:
+        trainer_state_path = Path(args.train.resume_from) / "trainer_state.json"
+        if trainer_state_path.exists():
+            with open(trainer_state_path) as f:
+                state = json.load(f)
+            wandb_run_id = state.get("wandb_run_id", None)
+
     # Initialize wandb
     if args.wandb.log and not args.debug:
-        wandb.init(
+        wandb_init_kwargs = dict(
             project=args.wandb.project,
             entity=args.wandb.entity,
             tags=args.wandb.tags,
@@ -191,6 +202,10 @@ def main(cfg: DictConfig):
                 "training": training_args.model_dump(),
             },
         )
+        if wandb_run_id:
+            wandb_init_kwargs["id"] = wandb_run_id
+            wandb_init_kwargs["resume"] = "must"
+        wandb.init(**wandb_init_kwargs)
         if args.wandb.log_code and not _logged_code:
             wandb.run.log_code(Path(__file__).parent.parent)
             _logged_code = True
@@ -216,8 +231,6 @@ def main(cfg: DictConfig):
     del benchmark_model, trainer
     gc.collect()
     torch.cuda.empty_cache()
-
-    destroy_process_group()
 
     if training_args.run_eval_suite_at_end and not args.debug:
         if not args.inference.factor_selection.enable:

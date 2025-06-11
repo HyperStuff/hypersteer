@@ -8,7 +8,7 @@ gradient_accumulation_steps: 1
 n_epochs: 3
 n_steps: -1
 val_interval: 100
-checkpoint_per_step: null
+save_interval: 0
 
 # Optimization parameters
 lr: 8e-5
