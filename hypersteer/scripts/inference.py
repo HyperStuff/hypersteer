@@ -343,6 +343,7 @@ def infer_steering(
         benchmark_model.load(
             dump_dir=args.dataset.train_dir,
             mode="steering",
+            model_name=model_config.model_name,
         )
         benchmark_model.to(device)
         if hasattr(benchmark_model, "ax"):

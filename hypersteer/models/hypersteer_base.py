@@ -545,7 +545,9 @@ class HyperSteerBase(Model, TrainerMixin):
         self.make_model(**kwargs)
 
         # Load only trainable parameters (base model weights are not saved)
-        saved_state_dict = load_file(weight_file, device=str(self.device))
+        # Note: safetensors doesn't support MPS, so load to CPU first
+        load_device = "cpu" if "mps" in str(self.device) else str(self.device)
+        saved_state_dict = load_file(weight_file, device=load_device)
         # Filter to only load parameters that exist and are trainable
         concept_embedding_state_dict = self.concept_embedding.state_dict()
         filtered_state_dict = {
@@ -559,8 +561,9 @@ class HyperSteerBase(Model, TrainerMixin):
             path = os.path.join(dump_dir, f"{model_name}_selection_head.safetensors")
             if os.path.exists(path):
                 self.ax.selection_head.load_state_dict(
-                    load_file(path, device=str(self.device))
+                    load_file(path, device=load_device)
                 )
+                self.ax.selection_head.to(self.device)
                 logger.debug(f"Loaded selection head from {path}")
 
     def predict_step(self, batch_examples, batch_idx, **kwargs):
