@@ -86,12 +86,12 @@ class LanguageModelStats:
         return input_price + output_price
 
     def print_report(self):
-        logger.warning("=" * 20)
-        logger.warning(
+        logger.info("=" * 20)
+        logger.info(
             f"Total calls: {self.total_call}, Total cache hits: {self.total_cache_hit}"
         )
-        logger.warning(f"Total price: ${self.get_total_price()}")
-        logger.warning("=" * 20)
+        logger.info(f"Total price: ${self.get_total_price()}")
+        logger.info("=" * 20)
 
     def get_report(self):
         return {

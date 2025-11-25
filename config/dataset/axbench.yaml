@@ -3,6 +3,11 @@ defaults:
 
 dataset_type: "axbench"
 
+# Top-level fields for backward compatibility and command-line overrides
+max_concepts: 50
+num_of_examples: -1
+cache_dir: "assets/cache"
+
 # AxBench-specific overrides
 train:
   dataset_category: "instruction"

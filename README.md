@@ -1,25 +1,16 @@
 # HyperSteer
 
-Steering models at scale with hypernetworks. This repo supports large scale distributed training and inference, along with high performance LLM-in-the-loop evaluation for training your own HyperSteer models.
+Steering models at scale with hypernetworks. This repo supports distributed training and inference, along with LLM-judge-in-the-loop evaluation for training your own HyperSteer models.
 
 ## Setup
 
-We use [uv](https://docs.astral.sh/uv/) to streamline dependency management:
-
 ```bash
+UV_TORCH_BACKEND=auto
 # in root directory
 uv sync
-```
-
-To install development dependencies, including `ipykernel`, `jupyter`, `pre-commit`, and `ai_commit`, run:
-
-```bash
+# To install development dependencies, including `ipykernel`, `jupyter`, `pre-commit`, and `ai_commit`, run:
 uv sync --extra dev
-```
-
-To install all optional dependencies, including `ray` and `flash-attn`, run:
-
-```bash
+# To install all optional dependencies, including `ray` and `flash-attn`, run:
 uv sync --all-extras
 ```
 
@@ -74,16 +65,7 @@ By default, training runs inference and evaluation at the end. This can be confi
 
 ## Environment Setup
 
-Some functionalities, such as Weights & Biases logging, Hugging Face model access, and OpenAI API calls, require specific environment variables to be set. Create a `.env` file in the root directory of the repository and populate it with the following variables:
-
-```env
-WANDB_PROJECT=wandb_project
-WANDB_ENTITY=entity
-WANDB_API_KEY=api_key
-HF_TOKEN=hf_token
-OPENAI_API_KEY=sk-proj-1234
-LOG_LEVEL=DEBUG
-```
+Put API keys in a `.env` file.
 
 # TODO
 

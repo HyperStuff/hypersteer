@@ -574,7 +574,7 @@ def select_steering_factors(
                 )
 
             trial.set_user_attr("all_metrics", metrics_dict)
-            logger.info(f"Factor: {factor}, All metrics: {metrics_dict}")
+            logger.debug(f"Factor: {factor}, All metrics: {metrics_dict}")
 
         logger.info(f"Factor: {factor}, Mean {metric_name}: {mean_score}")
 
@@ -603,9 +603,9 @@ def select_steering_factors(
         est_time_str = f"{int(hours):02d}:{int(minutes):02d}:{int(seconds):02d}"
 
         logger.info(f"Factor: {factor}, Mean {metric_name}: {mean_score}")
-        logger.info(f"Trial {trial.number + 1} execution time: {time_str}")
-        logger.info(f"Average trial time: {avg_time:.2f} seconds")
-        logger.info(
+        logger.debug(f"Trial {trial.number + 1} execution time: {time_str}")
+        logger.debug(f"Average trial time: {avg_time:.2f} seconds")
+        logger.debug(
             f"Estimated remaining time: {est_time_str} ({remaining_trials} trials left)"
         )
 
@@ -739,7 +739,7 @@ def select_steering_factors(
         ):
             # Get the actual metric keys from the first trial
             available_metrics = list(study.trials[0].user_attrs["all_metrics"].keys())
-            logger.info(f"Available metrics for visualization: {available_metrics}")
+            logger.debug(f"Available metrics for visualization: {available_metrics}")
 
             # Plot individual metric trends
             for metric in available_metrics:
@@ -787,13 +787,13 @@ def select_steering_factors(
                     metrics_for_3d = valid_metrics[:3]
 
                     # Make sure the metrics actually have values (debug for troubleshooting)
-                    logger.info(f"Using metrics for 3D plot: {metrics_for_3d}")
+                    logger.debug(f"Using metrics for 3D plot: {metrics_for_3d}")
                     for metric in metrics_for_3d:
                         metric_values = [
                             t.user_attrs["all_metrics"].get(metric, 0)
                             for t in study.trials
                         ]
-                        logger.info(
+                        logger.debug(
                             f"Metric {metric} values: min={min(metric_values)}, max={max(metric_values)}"
                         )
 
@@ -910,7 +910,7 @@ def select_steering_factors(
         for result in combined_results:
             json.dump(result, f)
             f.write("\n")
-    logger.info(f"Combined results saved to {results_jsonl_path}")
+    logger.debug(f"Combined results saved to {results_jsonl_path}")
 
     # Initialize wandb if report_to is wandb
     if report_to and "wandb" in report_to and not wandb.run:
@@ -1019,7 +1019,7 @@ def select_steering_factors(
     with open(metadata_path, "w") as f:
         json.dump(metadata, f, indent=2)
 
-    logger.info(f"Factor selection metadata saved to {metadata_path}")
+    logger.debug(f"Factor selection metadata saved to {metadata_path}")
 
     logger.info(f"Factor selection results saved to {results_path}")
     logger.info("=" * 80)
@@ -1050,7 +1050,7 @@ def run_inference(args: ExperimentConfig):
         and inference_dump_dir.exists()
         and any(inference_dump_dir.iterdir())
     ):
-        logger.warning(
+        logger.info(
             f"Infer dump dir {inference_dump_dir} already exists and is nonempty. Skipping."
         )
         return

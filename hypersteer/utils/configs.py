@@ -66,7 +66,7 @@ def load_experiment_config(
 
 
 class BaseConfigModel(BaseModel):
-    model_config = ConfigDict(protected_namespaces=())
+    model_config = ConfigDict(protected_namespaces=(), extra='forbid')
 
 
 class WandbConfig(BaseConfigModel):
@@ -79,8 +79,6 @@ class WandbConfig(BaseConfigModel):
     group: str | None = None
     tags: str | list[str] | None = None
     notes: str | None = None
-    watch_grads: bool = False
-    watch_grads_freq: int = 100
 
 
 class DatasetConfig(BaseConfigModel):
@@ -140,10 +138,35 @@ class DatasetConfig(BaseConfigModel):
         train = data.pop("train", None)
         eval_ = data.pop("eval", None)
         super().__init__(**data)
+        
+        # Merge top-level values into train/eval
+        # Top-level values (especially from command-line overrides) override train/eval values
+        # Get top-level values that should propagate to train/eval
+        top_level_overrides = {}
+        for field_name in self.model_fields.keys():
+            if field_name not in ['train', 'eval']:
+                # Check if this field exists in the original data (was explicitly set)
+                if field_name in data:
+                    top_level_overrides[field_name] = getattr(self, field_name)
+        
         if train is not None:
-            self.train = DatasetConfig(**train) if isinstance(train, dict) else train
+            if isinstance(train, dict):
+                # Start with train-specific values, then override with top-level values
+                # This ensures command-line overrides (at top-level) take precedence
+                train_data = dict(train)
+                train_data.update(top_level_overrides)
+                self.train = DatasetConfig(**train_data)
+            else:
+                self.train = train
         if eval_ is not None:
-            self.eval = DatasetConfig(**eval_) if isinstance(eval_, dict) else eval_
+            if isinstance(eval_, dict):
+                # Start with eval-specific values, then override with top-level values
+                # This ensures command-line overrides (at top-level) take precedence
+                eval_data = dict(eval_)
+                eval_data.update(top_level_overrides)
+                self.eval = DatasetConfig(**eval_data)
+            else:
+                self.eval = eval_
 
 
 class FactorSelectionConfig(BaseConfigModel):
@@ -204,6 +227,8 @@ class ModelConfig(BaseConfigModel):
     selection_l1_loss_coeff: float = 1e-3
     use_selection_ln: bool = True
     compute_sparsity_loss: bool = False
+    do_reconstruction: bool = False
+    reconstruction_dict_path: str | Path | None = None
     selection_head_start_temperature: float = 1.0
     selection_head_end_temperature: float = 0.05
     selection_head_learnable_temperature: bool = False
@@ -274,6 +299,7 @@ class GenerateConfig(BaseConfigModel):
     output_length: int = 128
     num_of_examples: int = 144
     max_concepts: int = 500
+    concept_path: str | Path | None = None
     master_data_dir: str | Path | None = None
     dataset_category: str = "instruction"
     lm_use_cache: bool = False
@@ -289,6 +315,16 @@ class InferenceConfig(BaseConfigModel):
     models: list[str] = Field(
         default_factory=list
     )  # Multiple models to run inference on
+    batch_infer_hypernetwork: bool = True
+
+    # Latent related params
+    input_length: int = 128
+    output_length: int = 128
+    latent_num_of_examples: int = 36
+    latent_batch_size: int = 16
+    imbalance_factor: int = 2
+    disable_neuronpedia_max_act: bool = True
+    ignore_latent_state: bool = False
 
     # Steering related params
     steering_intervention_type: str = "addition"

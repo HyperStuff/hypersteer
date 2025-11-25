@@ -1,88 +1,49 @@
 import gc
 import os
-import random
+from abc import abstractmethod
 from contextlib import nullcontext
 from typing import Any
 
-import einops
-import matplotlib.pyplot as plt
-import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from pyvene import IntervenableConfig, IntervenableModel
 from safetensors.torch import load_file, save_file
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
-from transformers import (
-    AutoConfig,
-    AutoModelForCausalLM,
-    AutoTokenizer,
-)
 
 from hypersteer.data.utils import get_batch_locs, make_data_module
 from hypersteer.training import TrainerMixin
 from hypersteer.utils.debug_utils import debug_print
-from hypersteer.utils.helpers import (
-    configure_tokenizer_model,
-    get_logger,
-    set_default_device,
-)
+from hypersteer.utils.helpers import get_logger
 from hypersteer.utils.model_utils import calculate_perplexity
 from hypersteer.utils.visualization import Visualizer
 
-from .hypernet.configuration_hypernet import HypernetConfig
-from .hypernet.modeling_hypernet import HypernetModel
 from .model import Model
 from .modules.interventions import HyperAdditiveIntervention
-from .modules.registry import register_model
 
 logger = get_logger(__name__)
 
 
-class RegressionWrapper(nn.Module):
-    def __init__(self, base_model, hidden_size, output_dim):
-        super().__init__()
-        self.base_model = base_model
-        self.regression_head = nn.Linear(hidden_size, output_dim)
-
-    def forward(
-        self,
-        input_ids,
-        attention_mask,
-        output_attentions=False,
-        normalize=False,
-    ):
-        outputs = self.base_model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            output_hidden_states=True,
-            output_attentions=output_attentions,
-            return_dict=True,
-        )
-        if isinstance(outputs, tuple):
-            last_hiddens = outputs[0].hidden_states[-1]
-        else:
-            last_hiddens = outputs.hidden_states[-1]
-        last_token_representations = last_hiddens[:, -1]
-        preds = self.regression_head(last_token_representations)
-        if normalize:
-            preds = F.normalize(preds, p=2, dim=-1)
-        if output_attentions:
-            return preds, outputs[1:][1]
-        return preds
-
-
-@register_model("HyperSteer")
-class HyperSteer(Model, TrainerMixin):
-    """Base HyperSteer model implementation. Supports various hypernet types."""
-
-    def __str__(self):
-        return "HyperSteer"
+class HyperSteerBase(Model, TrainerMixin):
+    """Base HyperSteer model with shared logic. Subclass for specific hypernet types."""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.visualizer = Visualizer()
+        self.concept_embedding: nn.Module = None
+        self.base_model_tokenizer = None
+
+    @abstractmethod
+    def _create_concept_embedding(self) -> nn.Module:
+        """Create and return the concept embedding module. Implemented by subclasses."""
+        pass
+
+    @abstractmethod
+    def _compute_concept_embedding(
+        self, inputs: dict[str, torch.Tensor]
+    ) -> torch.Tensor:
+        """Compute concept embedding vector from inputs. Implemented by subclasses."""
+        pass
 
     def make_model(self, **kwargs):
         self.ax = HyperAdditiveIntervention(
@@ -120,35 +81,12 @@ class HyperSteer(Model, TrainerMixin):
         ax_model.set_device(self.device)
         self.ax_model = ax_model
 
-        self.base_model_tokenizer = AutoTokenizer.from_pretrained(
-            self.model_config.base_model_name, model_max_length=512
+        # Create concept embedding (implemented by subclass)
+        self.concept_embedding, self.base_model_tokenizer = (
+            self._create_concept_embedding()
         )
-        self.base_model_tokenizer.padding_side = "left"
-        base_model_config = AutoConfig.from_pretrained(
-            self.model_config.base_model_name
-        )
-        if self.model_config.hypernet_type == "regression":
-            base_model = AutoModelForCausalLM.from_pretrained(
-                self.model_config.base_model_name, torch_dtype=torch.bfloat16
-            )
-            configure_tokenizer_model(base_model, self.base_model_tokenizer)
-            with set_default_device(self.device):
-                self.concept_embedding = RegressionWrapper(
-                    base_model=base_model,
-                    hidden_size=base_model.config.hidden_size,
-                    output_dim=self.model.config.hidden_size,
-                )
-        elif self.model_config.hypernet_type == "attn":
-            hypernet_config = HypernetConfig(
-                num_hidden_layers=self.model_config.cross_attn_hidden_layers,
-                target_model_name_or_path=self.model_config.base_model_name,
-                hidden_size=base_model_config.hidden_size,
-                torch_dtype=torch.bfloat16,
-            )
-            with set_default_device(self.device):
-                self.concept_embedding = HypernetModel(config=hypernet_config)
-
         self.concept_embedding = self.concept_embedding.to(torch.bfloat16)
+
         # Initialize empty concept mapping - will be populated from dataset
         self.concept_id_to_text = {}
 
@@ -159,11 +97,7 @@ class HyperSteer(Model, TrainerMixin):
         )
 
     def setup_model(self):
-        """
-        Setup the model for training.
-        # TODO: distributed training
-        """
-        # Load the concept embedding from the checkpoint
+        """Setup the model for training."""
         self.concept_embedding.train()
         self.ax.train()
 
@@ -204,10 +138,6 @@ class HyperSteer(Model, TrainerMixin):
     def get_trainable_parameters(self) -> list[nn.Parameter]:
         """Return parameters that should be included in gradient clipping."""
         return list(self.ax.parameters()) + list(self.concept_embedding.parameters())
-
-    def get_watchable_modules(self) -> list[nn.Module]:
-        """Return modules that should be watched by wandb."""
-        return [self.ax, self.concept_embedding]
 
     def post_backward(
         self,
@@ -315,31 +245,8 @@ class HyperSteer(Model, TrainerMixin):
             for subspace in subspaces:
                 subspace.update({"locs": inputs["intervention_locations"]})
 
-        # Compute concept embedding
-        if self.model_config.hypernet_type == "regression":
-            v = self.concept_embedding(
-                inputs["concept_input_ids"],
-                inputs["concept_attention_mask"],
-            )
-        elif self.model_config.hypernet_type == "attn":
-            concept_inputs_embeds = self.model.model.embed_tokens(
-                inputs["concept_input_ids"]
-            )
-            base_intervention_mask = inputs["labels"] == -100
-            base_intervention_mask = base_intervention_mask & inputs["attention_mask"]
-            base_hidden_state = self.model(
-                input_ids=inputs["input_ids"],
-                attention_mask=inputs["attention_mask"],
-                output_hidden_states=True,
-            ).hidden_states[self.layer]
-            v = self.concept_embedding(
-                input_ids=None,
-                inputs_embeds=concept_inputs_embeds,
-                attention_mask=inputs["concept_attention_mask"],
-                base_encoder_hidden_states=base_hidden_state,
-                base_encoder_attention_mask=base_intervention_mask,
-                output_hidden_states=False,
-            ).last_hidden_state
+        # Compute concept embedding (delegated to subclass)
+        v = self._compute_concept_embedding(inputs)
 
         self.ax._update_v(v)
         base_out, cf_out = self.ax_model(
@@ -402,7 +309,6 @@ class HyperSteer(Model, TrainerMixin):
         self.concept_embedding.train()
         self.ax.train()
 
-    # Helper methods for visualization
     def _visualize_training_mask(self, mask, inputs, global_step):
         """Visualize training mask."""
         batch_tokens = [
@@ -461,30 +367,8 @@ class HyperSteer(Model, TrainerMixin):
         unit_locations,
         subspaces,
     ):
-        if self.model_config.hypernet_type == "regression":
-            v = self.concept_embedding(
-                inputs["concept_input_ids"],
-                inputs["concept_attention_mask"],
-            )
-        elif self.model_config.hypernet_type == "attn":
-            concept_inputs_embeds = self.model.model.embed_tokens(
-                inputs["concept_input_ids"]
-            )
-            base_intervention_mask = inputs["labels"] == -100
-            base_intervention_mask = base_intervention_mask & inputs["attention_mask"]
-            base_hidden_state = self.model(
-                input_ids=inputs["input_ids"],
-                attention_mask=inputs["attention_mask"],
-                output_hidden_states=True,
-            ).hidden_states[self.layer]
-            v = self.concept_embedding(
-                input_ids=None,
-                inputs_embeds=concept_inputs_embeds,
-                attention_mask=inputs["concept_attention_mask"],
-                base_encoder_hidden_states=base_hidden_state,
-                base_encoder_attention_mask=base_intervention_mask,
-                output_hidden_states=False,
-            ).last_hidden_state
+        # Compute concept embedding (delegated to subclass)
+        v = self._compute_concept_embedding(inputs)
 
         if self.model_config.debug_print:
             debug_print(
@@ -553,13 +437,10 @@ class HyperSteer(Model, TrainerMixin):
         viz_mode="sparse_mask",
         title_prefix=None,
     ):
-        """
-        Helper to visualize sparse mask using the configured visualization options.
-        """
+        """Helper to visualize sparse mask using the configured visualization options."""
         if not self.model_config.mask_visualization.log_heatmap:
             return
         freq = self.model_config.mask_visualization.log_heatmap_freq
-        # If step is a tuple (step, freq), use step[0] for step and step[1] for freq
         if isinstance(step, tuple):
             step, freq = step
         if step is not None and freq is not None and step % freq != 0:
@@ -585,15 +466,12 @@ class HyperSteer(Model, TrainerMixin):
         """Extract concept ID to concept text mapping from the dataset."""
         concept_id_to_text = {}
 
-        # Extract from output_concept column if available
         if "output_concept" in examples.columns:
             for _, row in examples.iterrows():
                 concept_id = row.get("concept_id")
                 concept_text = row.get("output_concept")
                 if concept_id is not None and concept_text is not None:
                     concept_id_to_text[concept_id] = concept_text
-
-        # Also check for input_concept column as fallback
         elif "input_concept" in examples.columns:
             for _, row in examples.iterrows():
                 concept_id = row.get("concept_id")
@@ -610,7 +488,6 @@ class HyperSteer(Model, TrainerMixin):
         extracted_concept_mapping = self._extract_concept_metadata_from_dataset(
             examples
         )
-        # Update the concept_id_to_text mapping with extracted data
         self.concept_id_to_text.update(extracted_concept_mapping)
 
         if distributed:
@@ -647,12 +524,19 @@ class HyperSteer(Model, TrainerMixin):
         model_name = kwargs.get("model_name", self.__str__())
         weight_file = os.path.join(dump_dir, f"{model_name}_weight.safetensors")
         self.concept_embedding.cpu()
-        save_file(self.concept_embedding.state_dict(), weight_file)
+        # Only save trainable parameters (exclude base model weights which are redundant)
+        trainable_state_dict = {
+            k: v.clone() 
+            for k, v in self.concept_embedding.named_parameters() 
+            if v.requires_grad
+        }
+        save_file(trainable_state_dict, weight_file)
 
-        # Save token selection (sparse_selection) if enabled
         if hasattr(self.ax, "selection_head") and self.model_config.use_selection_head:
             path = os.path.join(dump_dir, f"{model_name}_selection_head.safetensors")
-            save_file(self.ax.selection_head.state_dict(), path)
+            # Clone tensors to avoid shared memory issues
+            selection_state_dict = {k: v.clone() for k, v in self.ax.selection_head.state_dict().items()}
+            save_file(selection_state_dict, path)
             logger.debug(f"Saved selection head to {path}")
 
     def load(self, dump_dir=None, **kwargs):
@@ -660,12 +544,17 @@ class HyperSteer(Model, TrainerMixin):
         weight_file = os.path.join(dump_dir, f"{model_name}_weight.safetensors")
         self.make_model(**kwargs)
 
-        self.concept_embedding.load_state_dict(
-            load_file(weight_file, device=str(self.device))
-        )
+        # Load only trainable parameters (base model weights are not saved)
+        saved_state_dict = load_file(weight_file, device=str(self.device))
+        # Filter to only load parameters that exist and are trainable
+        concept_embedding_state_dict = self.concept_embedding.state_dict()
+        filtered_state_dict = {
+            k: v for k, v in saved_state_dict.items() 
+            if k in concept_embedding_state_dict
+        }
+        self.concept_embedding.load_state_dict(filtered_state_dict, strict=False)
         self.concept_embedding.to(self.device)
 
-        # Load token selection (sparse_selection) if enabled and file exists
         if self.model_config.use_selection_head and hasattr(self.ax, "selection_head"):
             path = os.path.join(dump_dir, f"{model_name}_selection_head.safetensors")
             if os.path.exists(path):
@@ -674,50 +563,8 @@ class HyperSteer(Model, TrainerMixin):
                 )
                 logger.debug(f"Loaded selection head from {path}")
 
-    def get_logits(self, concept_id, k=10):
-        top_logits, neg_logits = [None], [None]
-
-        W_U = self.model.lm_head.weight.T
-        W_U = (
-            W_U
-            * (
-                self.model.model.norm.weight
-                + torch.ones_like(self.model.model.norm.weight)
-            )[:, None]
-        )
-        W_U -= einops.reduce(W_U, "d_model d_vocab -> 1 d_vocab", "mean")
-
-        concept_text = self.concept_id_to_text.get(concept_id)
-        if concept_text is None:
-            raise ValueError(f"Concept ID {concept_id} not found in concept mapping.")
-
-        concept_input = self.base_model_tokenizer(
-            concept_text,
-            return_tensors="pt",
-            add_special_tokens=True,
-            padding=True,
-            truncation=True,
-        ).to(self.device)
-
-        concept_subspace = self.concept_embedding(
-            concept_input["input_ids"],
-            concept_input["attention_mask"],
-        )
-
-        vocab_logits = concept_subspace @ W_U
-        top_values, top_indices = vocab_logits.topk(k=k, sorted=True)
-        top_tokens = self.tokenizer.batch_decode(top_indices)
-
-        top_logits = [list(zip(top_tokens, top_values.tolist()))]
-
-        neg_values, neg_indices = vocab_logits.topk(k=k, largest=False, sorted=True)
-        neg_tokens = self.tokenizer.batch_decode(neg_indices)
-        neg_logits = [list(zip(neg_tokens, neg_values.tolist()))]
-
-        return top_logits, neg_logits
-
     def predict_step(self, batch_examples, batch_idx, **kwargs):
-        """HyperSteer-specific prediction step with concept embeddings and visualizations."""
+        """Prediction step with concept embeddings and visualizations."""
         self.dump_dir = kwargs.get("dump_dir", None)
         eval_output_length = kwargs.get("eval_output_length", 128)
         temperature = kwargs.get("temperature", 1.0)
@@ -727,17 +574,11 @@ class HyperSteer(Model, TrainerMixin):
         )
         os.makedirs(infer_dump_dir, exist_ok=True)
 
-        cross_attn_dump_dir = os.path.join(
-            kwargs.get("dump_dir") or "assets/cache/sparse_masks", "cross_attn_heatmaps"
-        )
-        os.makedirs(cross_attn_dump_dir, exist_ok=True)
-
         input_strings = batch_examples["input"].tolist()
 
         mag = torch.tensor(batch_examples["factor"].tolist()).to(self.device)
         idx = torch.tensor(batch_examples["concept_id"].tolist()).to(self.device)
 
-        # tokenize input_strings
         inputs = self.tokenizer(
             input_strings, return_tensors="pt", padding=True, truncation=True
         ).to(self.device)
@@ -760,62 +601,10 @@ class HyperSteer(Model, TrainerMixin):
             truncation=True,
         ).to(self.device)
 
-        # --- Concept embedding (v) ---
-        if self.model_config.hypernet_type == "regression":
-            v = self.concept_embedding(
-                concept_inputs["input_ids"],
-                concept_inputs["attention_mask"],
-            )
-        elif self.model_config.hypernet_type == "attn":
-            concept_inputs_embeds = self.model.model.embed_tokens(
-                concept_inputs["input_ids"]
-            )
-            base_intervention_mask = inputs["attention_mask"]
-            base_hidden_state = self.model(
-                input_ids=inputs["input_ids"],
-                attention_mask=inputs["attention_mask"],
-                output_hidden_states=True,
-            ).hidden_states[self.layer]
+        # Compute concept embedding (delegated to subclass)
+        v = self._compute_concept_embedding_for_inference(inputs, concept_inputs)
 
-            if self.model_config.cross_attn_heatmap_visualization.log_heatmap:
-                outputs = self.concept_embedding(
-                    input_ids=None,
-                    inputs_embeds=concept_inputs_embeds,
-                    attention_mask=concept_inputs["attention_mask"],
-                    base_encoder_hidden_states=base_hidden_state,
-                    base_encoder_attention_mask=base_intervention_mask,
-                    output_hidden_states=False,
-                    output_attentions=True,
-                    return_dict=True,
-                )
-                v = outputs.last_hidden_state
-                cross_attn_weights = outputs.cross_attentions
-                freq = (
-                    self.model_config.cross_attn_heatmap_visualization.log_heatmap_freq
-                )
-                if batch_idx % freq == 0:
-                    self._save_cross_attn_heatmaps(
-                        cross_attn_weights,
-                        inputs["input_ids"],
-                        concept_inputs["input_ids"],
-                        inputs["attention_mask"],
-                        concept_inputs["attention_mask"],
-                        cross_attn_dump_dir,
-                        batch_idx,
-                        tokenizer=self.tokenizer,
-                        prefix="cross_attn",
-                    )
-            else:
-                v = self.concept_embedding(
-                    input_ids=None,
-                    inputs_embeds=concept_inputs_embeds,
-                    attention_mask=concept_inputs["attention_mask"],
-                    base_encoder_hidden_states=base_hidden_state,
-                    base_encoder_attention_mask=base_intervention_mask,
-                    output_hidden_states=False,
-                ).last_hidden_state
-
-        # Store steering vectors for each example in the batch (move to cpu)
+        # Store steering vectors
         v_np = v.detach().float().cpu().numpy()
         steering_vectors = [row.copy() for row in v_np]
 
@@ -828,7 +617,6 @@ class HyperSteer(Model, TrainerMixin):
             tokenizer=self.tokenizer,
         )
 
-        # Always define subspaces as a list of dicts (one per layer)
         subspaces = [
             {
                 "idx": idx,
@@ -853,13 +641,11 @@ class HyperSteer(Model, TrainerMixin):
             output_scores=True,
         )
 
-        # Get generated sequences
         if isinstance(steered_out, dict):
             generations = steered_out.get("sequences", None)
         else:
             generations = getattr(steered_out, "sequences", None)
 
-        # Forward pass through ax_model to get full logits for generated sequences
         gen_attention_mask = (generations != self.tokenizer.pad_token_id).long()
         with torch.no_grad():
             base_out_gen, steered_out_gen = self.ax_model(
@@ -874,7 +660,6 @@ class HyperSteer(Model, TrainerMixin):
                 output_original_output=True,
             )
 
-        # Logit diff visualization every N batches (on generated text)
         if (
             self.model_config.logit_diff_visualization.log_heatmap
             and batch_idx % self.model_config.logit_diff_visualization.log_heatmap_freq
@@ -893,14 +678,12 @@ class HyperSteer(Model, TrainerMixin):
                 dump_dir=self.dump_dir,
             )
 
-        # Decode and print only the generated text without prompt tokens
         input_lengths = [len(input_ids) for input_ids in inputs.input_ids]
         generated_texts = [
             self.tokenizer.decode(generation[input_length:], skip_special_tokens=True)
             for generation, input_length in zip(generations, input_lengths)
         ]
 
-        # Calculate perplexity for each sequence
         unpruned_generated_texts = [
             self.tokenizer.decode(generation, skip_special_tokens=True)
             for generation in generations
@@ -910,10 +693,8 @@ class HyperSteer(Model, TrainerMixin):
             self.model, self.tokenizer, unpruned_generated_texts, self.device
         )
 
-        # Clear the steering vector generated for this batch
         self.ax._reset_v()
 
-        # Cleanup
         del base_out, steered_out, base_out_gen, steered_out_gen, v, v_np
         gc.collect()
         torch.cuda.empty_cache()
@@ -923,6 +704,13 @@ class HyperSteer(Model, TrainerMixin):
             "perplexities": perplexities,
             "steering_vectors": steering_vectors,
         }
+
+    @abstractmethod
+    def _compute_concept_embedding_for_inference(
+        self, inputs: dict, concept_inputs: dict
+    ) -> torch.Tensor:
+        """Compute concept embedding for inference. Implemented by subclasses."""
+        pass
 
     def _logit_diff_visualization(
         self,
@@ -940,16 +728,14 @@ class HyperSteer(Model, TrainerMixin):
         full_base_logits = base_output.logits
         full_cf_logits = cf_outputs.logits
 
-        # Compute logprobs and logit diff
-        cf_logps = F.log_softmax(full_cf_logits, dim=-1)
-        base_logps = F.log_softmax(full_base_logits, dim=-1)
+        cf_logps = torch.nn.functional.log_softmax(full_cf_logits, dim=-1)
+        base_logps = torch.nn.functional.log_softmax(full_base_logits, dim=-1)
         logit_diff = cf_logps - base_logps
         logit_diff = (logit_diff * inputs["attention_mask"].unsqueeze(-1)).sum(dim=-1)
 
         if normalize:
             logit_diff = logit_diff / inputs["attention_mask"].sum(dim=-1)
 
-        # Clean mode string for directory name
         mode_dir = str(mode).replace("/", "_").replace(" ", "_")
         dump_dir_final = os.path.join(dump_dir, mode_dir)
 
@@ -973,152 +759,3 @@ class HyperSteer(Model, TrainerMixin):
             viz_mode=viz_mode_str,
             title_prefix="Logit Diff",
         )
-
-    def _save_cross_attn_heatmaps(
-        self,
-        attn_weights,
-        input_ids,
-        concept_ids,
-        input_attention_mask,
-        concept_attention_mask,
-        dump_dir,
-        batch_idx,
-        tokenizer=None,
-        prefix="cross_attn",
-        max_samples=5,  # Only visualize up to 5 random samples per batch
-    ):
-        """
-        Save cross-attention heatmap grids for a random subset of samples in a batch.
-        Each grid: rows=heads, columns=layers, each cell is a heatmap.
-        attn_weights: list/tuple of (num_layers,) each [batch, num_heads, q_len, kv_len]
-        input_ids: [batch, seq_len] (input tokens)
-        concept_ids: [batch, seq_len] (concept tokens)
-        input_attention_mask: [batch, seq_len] (mask for input tokens)
-        concept_attention_mask: [batch, seq_len] (mask for concept tokens)
-        dump_dir: directory to save PNGs
-        batch_idx: int, batch number
-        tokenizer: tokenizer to decode tokens
-        prefix: filename prefix
-        max_samples: maximum number of samples to visualize per batch
-        """
-
-        os.makedirs(dump_dir, exist_ok=True)
-        if tokenizer is None:
-            tokenizer = self.tokenizer
-        clean = self.visualizer.clean_text_for_display
-
-        num_layers = len(attn_weights)
-        if num_layers == 0:
-            return
-
-        num_heads = attn_weights[0].shape[1]
-        batch_size = attn_weights[0].shape[0]
-        # Pick up to max_samples random indices
-        if batch_size > max_samples:
-            sample_indices = random.sample(range(batch_size), max_samples)
-        else:
-            sample_indices = list(range(batch_size))
-        for sample_idx in sample_indices:
-            # Create a subdirectory for this sample
-            sample_dir = os.path.join(dump_dir, f"sample_{sample_idx}")
-            os.makedirs(sample_dir, exist_ok=True)
-            input_mask = input_attention_mask[sample_idx].detach().cpu().bool().numpy()
-            input_tokens = [
-                t
-                for t, m in zip(
-                    tokenizer.convert_ids_to_tokens(
-                        input_ids[sample_idx].detach().cpu()
-                    ),
-                    input_mask,
-                )
-                if m
-            ]
-            input_tokens = clean(input_tokens)
-            # Decode concept string for this sample (without special tokens)
-            concept_str = tokenizer.decode(
-                concept_ids[sample_idx].detach().cpu(),
-                skip_special_tokens=True,
-            )
-            # Truncate or wrap concept string for title
-            max_title_len = 80
-            if len(concept_str) > max_title_len:
-                concept_str_disp = concept_str[:max_title_len] + "..."
-            else:
-                concept_str_disp = concept_str
-            for l in range(num_layers):
-                attn_layer = attn_weights[l][sample_idx]  # [num_heads, q_len, kv_len]
-                # Get valid (unpadded) tokens for axes using indices
-                input_mask = (
-                    input_attention_mask[sample_idx].detach().cpu().bool().numpy()
-                )
-                input_indices = np.where(input_mask)[0]
-                input_tokens = [
-                    t
-                    for i, t in enumerate(
-                        tokenizer.convert_ids_to_tokens(
-                            input_ids[sample_idx].detach().cpu()
-                        )
-                    )
-                    if input_mask[i]
-                ]
-
-                # Replace each whitespace token in input_tokens with '[SPACE]'
-                input_tokens = [
-                    "[SPACE]" if t == "" or t == "\n" or t == " " else t
-                    for t in input_tokens
-                ]
-
-                concept_mask = (
-                    concept_attention_mask[sample_idx].detach().cpu().bool().numpy()
-                )
-                concept_indices = np.where(concept_mask)[0]
-                concept_tokens = [
-                    t
-                    for i, t in enumerate(
-                        tokenizer.convert_ids_to_tokens(
-                            concept_ids[sample_idx].detach().cpu()
-                        )
-                    )
-                    if concept_mask[i]
-                ]
-                concept_tokens = clean(concept_tokens)
-                num_heads, q_len, kv_len = attn_layer.shape
-                fig, axes = plt.subplots(
-                    nrows=num_heads,
-                    ncols=1,
-                    figsize=(max(6, len(input_tokens) // 2), max(3, num_heads * 2)),
-                    sharex=True,
-                )
-                if num_heads == 1:
-                    axes = [axes]
-                im = None
-                for h in range(num_heads):
-                    ax = axes[h]
-                    # Use np.ix_ to select the correct submatrix
-                    attn_2d = (
-                        attn_layer[h][np.ix_(concept_indices, input_indices)]
-                        .cpu()
-                        .float()
-                        .numpy()
-                    )
-                    im = ax.imshow(
-                        attn_2d, aspect="auto", cmap="viridis", vmin=0, vmax=1
-                    )
-                    ax.set_ylabel(f"Head {h}")
-                    ax.set_yticks(np.arange(len(concept_tokens)))
-                    ax.set_yticklabels(concept_tokens, fontsize=6)
-                    if h == num_heads - 1:
-                        ax.set_xticks(np.arange(len(input_tokens)))
-                        ax.set_xticklabels(input_tokens, rotation=90, fontsize=6)
-                        ax.set_xlabel("Input Tokens")
-                    else:
-                        ax.set_xticks([])
-                fig.suptitle(
-                    f"{prefix} Layer {l} | Concept: {concept_str_disp}", fontsize=10
-                )
-                fig.tight_layout(rect=[0, 0, 1, 0.97])
-                if im is not None:
-                    fig.colorbar(im, ax=axes, fraction=0.02)
-                fname = os.path.join(sample_dir, f"layer_{l}.png")
-                plt.savefig(fname, dpi=100)
-                plt.close(fig)

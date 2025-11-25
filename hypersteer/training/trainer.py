@@ -73,6 +73,8 @@ class TrainerMixin(ABC):
             # Handle value extraction (for tensors, etc.)
             if isinstance(value, torch.Tensor):
                 processed_value = value.detach().item()
+            elif value is None:
+                continue
             else:
                 processed_value = float(value)  # Ensure it's a standard float
 
@@ -187,13 +189,6 @@ class Trainer:
             logger.info(f"  - Estimated epochs to complete: {estimated_epochs:.2f}")
         else:
             logger.info(f"  - Training epochs: {effective_epochs}")
-
-        # Setup wandb watching
-        if wandb.run and self.wandb_config and self.wandb_config.watch_grads:
-            # Let the model decide what to watch
-            if hasattr(self.model, "get_watchable_modules"):
-                modules = self.model.get_watchable_modules()
-                wandb.watch(modules, log_freq=self.wandb_config.watch_grads_freq)
 
         return num_training_steps, effective_epochs
 

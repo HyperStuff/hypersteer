@@ -131,7 +131,7 @@ class LMJudgeEvaluator(Evaluator):
         - If the answer gets at least 1 for the first two checks, we sum three scores.
         - If the answer does not get 1 for the first two checks, the score is 0.
         """
-        logger.warning(
+        logger.debug(
             f"Starting task for concept_id: {self.concept_id}, "
             f"model: {self.model_name}, evaluator: {self.__str__()}"
         )

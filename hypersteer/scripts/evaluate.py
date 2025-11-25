@@ -348,7 +348,7 @@ def process_mask_sparsity_metrics(
         std_sparsity = reduced_sparsity.std()
         sparsity_metrics[f"eval_mean_mask_sparsity/{model_name}"] = avg_sparsity
         sparsity_metrics[f"eval_std_mask_sparsity/{model_name}"] = std_sparsity
-        logger.warning(
+        logger.info(
             f"Average mask sparsity for {model_name}: {avg_sparsity:.4f} (std: {std_sparsity:.4f})"
         )
         # --- Save histogram plot to disk ---
@@ -375,7 +375,7 @@ def process_mask_sparsity_metrics(
         plt.tight_layout()
         plt.savefig(plot_path)
         plt.close()
-        logger.warning(f"Saved mask sparsity histogram to {plot_path}")
+        logger.debug(f"Saved mask sparsity histogram to {plot_path}")
         # Log histogram to wandb if enabled
         if args.evaluate.report_to == "wandb" and wandb.run:
             wandb.log(
@@ -410,7 +410,7 @@ def process_mask_sparsity_metrics(
             plt.tight_layout()
             plt.savefig(boxplot_path)
             plt.close()
-            logger.warning(f"Saved mask sparsity boxplot to {boxplot_path}")
+            logger.debug(f"Saved mask sparsity boxplot to {boxplot_path}")
             # Log boxplot to wandb
             if args.evaluate.report_to == "wandb" and wandb.run:
                 wandb.log(
@@ -423,7 +423,7 @@ def process_mask_sparsity_metrics(
     # Log to wandb if enabled
     if args.evaluate.report_to == "wandb" and wandb.run:
         wandb.log(sparsity_metrics)
-        logger.warning("Logged average mask sparsity to wandb.")
+        logger.debug("Logged average mask sparsity to wandb.")
 
 
 def eval_steering_single_task(args_tuple):
@@ -538,7 +538,7 @@ def eval_steering(
         else None
     )
     start_concept_id = state.get("concept_id", 0) if state else 0
-    logger.warning(f"Starting concept_id: {start_concept_id}")
+    logger.info(f"Starting concept_id: {start_concept_id}")
 
     if select_concept_ids is not None:
         start_concept_id = select_concept_ids[0]
@@ -576,7 +576,7 @@ def eval_steering(
             ]
             all_tasks.extend(model_tasks)
         else:
-            logger.warning(
+            logger.info(
                 f"Model {model_name} is excluded from steering evaluation, skipping"
             )
 
@@ -584,7 +584,7 @@ def eval_steering(
     all_results = {}
 
     # Run all evaluations with process pool
-    logger.warning(
+    logger.info(
         f"Number of workers: {args.evaluate.num_of_workers}; Number of CPUs: {multiprocessing.cpu_count()}"
     )
     if (
@@ -644,7 +644,7 @@ def eval_steering(
                 eval_dfs[concept_id][evaluator_str][model_str] = current_df.copy()
             lm_reports += [lm_report]
             lm_caches.update(lm_cache)
-            logger.warning(
+            logger.debug(
                 f"Completed task for concept_id: {concept_id}, model: {model_str}, evaluator: {evaluator_str}"
             )
 
@@ -695,17 +695,17 @@ def eval_steering(
         "total_cache_hits": sum([report["total_cache_hits"] for report in lm_reports]),
         "total_price": sum([report["total_price"] for report in lm_reports]),
     }
-    logger.warning("=" * 20)
-    logger.warning(
+    logger.info("=" * 20)
+    logger.info(
         f"Total calls: {aggregated_lm_report['total_calls']}, "
-        f"Total cache hits: {aggregated_lm_report['total_cache_hits']}"
+        f"Total cache_hits: {aggregated_lm_report['total_cache_hits']}"
     )
-    logger.warning(f"Total price: ${aggregated_lm_report['total_price']}")
-    logger.warning("=" * 20)
+    logger.info(f"Total price: ${aggregated_lm_report['total_price']}")
+    logger.info("=" * 20)
 
     # Generate final plot
     if not return_results:
-        logger.warning("Generating final plot...")
+        logger.info("Generating final plot...")
         plot_steering(
             aggregated_results,
             Path(dump_dir) / eval_run,
@@ -716,7 +716,7 @@ def eval_steering(
 
         # Plot winrate
         if "WinRateEvaluator" in args.evaluate.steering_evaluators:
-            logger.warning("Generating winrate plot...")
+            logger.info("Generating winrate plot...")
             plot_win_rates(
                 aggregated_results,
                 Path(args.dump_dir) / eval_run,
@@ -724,7 +724,7 @@ def eval_steering(
                 args.wandb.run_name,
             )
 
-    logger.warning("Evaluation completed!")
+    logger.info("Evaluation completed!")
 
     if return_results:
         # IMPORTANT: if we return aggregated_results this is cumulative and leads to silent errors
@@ -851,7 +851,7 @@ def log_results_to_wandb(
 
 
 def run_eval(args: ExperimentConfig, infer_run="inference"):
-    logger.warning(
+    logger.info(
         f"Evaluating generations with the following configuration:\n{dump_json(args.evaluate.model_dump(), indent=4)}"
     )
 
@@ -872,7 +872,7 @@ def run_eval(args: ExperimentConfig, infer_run="inference"):
         and eval_dump_dir.exists()
         and any(eval_dump_dir.iterdir())
     ):
-        logger.warning(
+        logger.info(
             f"Eval dump dir {eval_dump_dir} already exists and is nonempty. Skipping."
         )
         return

@@ -7,8 +7,7 @@ defaults:
   - inference: base
   - evaluate: base
   - generate: base
-  - launcher: null # Default to base launcher, can be overridden
-  - experiment: null # This will merge at root level when specified
+  - experiment: null # Merges at root level when specified
   - override hydra/job_logging: colorlog
   - override hydra/hydra_logging: colorlog
 
@@ -16,27 +15,7 @@ debug: false
 seed: 42
 dump_dir: null
 
-dataset:
-  train:
-    dataset_category: "instruction"
-    max_concepts: 100
-    num_of_examples: -1
-    cache_dir: "assets/cache"
-    hf_dataset_name: "pyvene/axbench-concept500"
-    hf_data_files:
-      train: "2b/l10/train/data.parquet"
-    hf_split: "train"
-    select_concept_ids: []
-  eval:
-    dataset_category: "instruction"
-    max_concepts: 100
-    num_of_examples: -1
-    cache_dir: "assets/cache"
-    hf_dataset_name: "pyvene/axbench-concept500"
-    hf_data_files:
-      train: "2b/l10/train/data.parquet"
-    hf_split: "eval"
-    select_concept_ids: []
+# Dataset config comes from config/dataset/axbench.yaml
 
 wandb:
   log: true
@@ -53,5 +32,6 @@ wandb:
 hydra:
   job:
     env_set:
+      HF_HUB_ENABLE_HF_TRANSFER: 1
       OPENAI_DRY_RUN: 0
       TOKENIZERS_PARALLELISM: false

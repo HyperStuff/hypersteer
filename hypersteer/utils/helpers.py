@@ -13,6 +13,15 @@ import torch.distributed as dist
 from hypersteer.utils.constants import EVAL_STATE_FILE
 
 
+def _get_current_device():
+    if torch.cuda.is_available():
+        return torch.cuda.current_device()
+    elif torch.backends.mps.is_available():
+        return torch.device("mps")
+    else:
+        return torch.device("cpu")
+
+
 def load_state(dump_dir, mode, eval_run="evaluate"):
     """
     Load the state from a file if it exists.

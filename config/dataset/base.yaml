@@ -1,6 +1,12 @@
 defaults:
   - _self_
 
+# Top-level fields for backward compatibility and command-line overrides
+# These serve as defaults for train/eval if not specified
+max_concepts: 500
+num_of_examples: 144
+cache_dir: null
+
 train:
   dataset_name: null
   dataset_category: "instruction"

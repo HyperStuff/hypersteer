@@ -49,7 +49,7 @@ def load_concepts(dump_dir):
         with open(dump_dir) as file:
             concepts = [line.strip() for line in file.readlines()]
         if concepts[0].startswith("http://") or concepts[0].startswith("https://"):
-            logger.warning("Detect external links. Pull concept info from the link.")
+            logger.info("Detect external links. Pull concept info from the link.")
             for concept in concepts:
                 if "www.neuronpedia.org" not in concept:
                     raise ValueError(f"Pulling from {concept} is not supported.")
@@ -370,7 +370,7 @@ def generate_latent(generate_args, args):
         )
 
         save_latent(dump_dir, concept_id, "latent", current_df)
-        logger.warning(
+        logger.debug(
             f"Saved inference dataset for concept {concept_id} to latent_eval_data.parquet"
         )
         # After processing, save state
@@ -405,9 +405,9 @@ def generate_training(args, generate_args):
     # Load the state if it exists.
     state = load_state(dump_dir)
     start_concept_id = state.get("concept_id", 0) if state else 0
-    logger.warning(f"Starting concept index: {start_concept_id}")
+    logger.info(f"Starting concept index: {start_concept_id}")
     if start_concept_id >= len(concepts):
-        logger.warning("Datasets for all concepts have been generated. Exiting.")
+        logger.info("Datasets for all concepts have been generated. Exiting.")
         return
 
     # Create a new OpenAI client.
@@ -510,7 +510,7 @@ def generate_training(args, generate_args):
         )
         data_concept_id += 1
 
-    logger.warning("Finished creating dataset.")
+    logger.info("Finished creating dataset.")
 
 
 def save_dpo(dump_dir, concept_id, partition, current_df):
@@ -576,9 +576,9 @@ def generate_dpo_training(args, generate_args):
     # Load the state if it exists.
     state = load_state_latent(dump_dir, "dpo")
     start_concept_id = state.get("concept_id", 0) if state else 0
-    logger.warning(f"Starting concept index: {start_concept_id}")
+    logger.info(f"Starting concept index: {start_concept_id}")
     if start_concept_id >= len(concepts):
-        logger.warning("Datasets for all concepts have been generated. Exiting.")
+        logger.info("Datasets for all concepts have been generated. Exiting.")
         return
 
     # Load lm and tokenizer.
@@ -654,14 +654,14 @@ def generate_dpo_training(args, generate_args):
         )
 
         save_dpo(dump_dir, concept_id, "dpo", dpo_df)
-        logger.warning(
+        logger.debug(
             f"Saved inference dataset for concept {concept_id} to latent_eval_data.parquet"
         )
         # After processing, save state
         current_state = {"concept_id": concept_id}
         save_state_dpo(args.dump_dir, current_state, "latent")
 
-    logger.warning("Finished creating DPO dataset.")
+    logger.info("Finished creating DPO dataset.")
 
 
 def main():
@@ -678,8 +678,8 @@ def main():
 
     generate_args = DatasetArgs(custom_args=custom_args, section="generate")
     inference_args = DatasetArgs(custom_args=custom_args, section="inference")
-    logger.warning("Generating datasets with the following configuration:")
-    logger.warning(generate_args)
+    logger.info("Generating datasets with the following configuration:")
+    logger.info(generate_args)
 
     if generate_args.mode == "training":
         generate_training(generate_args, inference_args)

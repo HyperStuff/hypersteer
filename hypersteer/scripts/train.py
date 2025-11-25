@@ -19,6 +19,7 @@ from hypersteer.scripts.inference import run_inference
 from hypersteer.training import Trainer
 from hypersteer.utils.configs import ExperimentConfig, config_to_pydantic
 from hypersteer.utils.helpers import (
+    _get_current_device,
     configure_tokenizer_model,
     destroy_process_group,
     get_logger,
@@ -45,7 +46,7 @@ def main(cfg: DictConfig):
     args = config_to_pydantic(config, ExperimentConfig)
 
     # Set the device for this process
-    device = torch.cuda.current_device()
+    device = _get_current_device()
     logger.debug(f"Using device {device}")
 
     # Set a unique seed per rank for reproducibility

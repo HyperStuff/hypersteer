@@ -46,7 +46,7 @@ async def dry_run_chat_completions(self, *args, **kwargs):
 
     # Log first few calls
     if call_stats["calls"] <= 3:
-        logger.warning(
+        logger.debug(
             f"DryRun: API call to {model} (input tokens: {input_tokens}, max output: {max_tokens})"
         )
 
@@ -78,5 +78,5 @@ def patch_client(client: AsyncOpenAI) -> AsyncOpenAI:
     # Patch the instance
     client.chat.completions.create = bound_dry_run
 
-    logger.warning(f"Patched OpenAI client instance {id(client)}")
+    logger.debug(f"Patched OpenAI client instance {id(client)}")
     return client

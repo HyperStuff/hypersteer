@@ -1,7 +1,6 @@
 import torch
 
 from hypersteer.models.model import Model
-from hypersteer.models.modules.registry import register_model
 from hypersteer.utils.helpers import get_logger
 
 # Initialize the logger
@@ -33,7 +32,6 @@ more natural integration. Provide your rating using this exact format: "Rating: 
 """
 
 
-@register_model("PromptSteering")
 class PromptSteering(Model):
     input_field = "steered_input"
 
@@ -114,7 +112,6 @@ class PromptSteering(Model):
         }
 
 
-@register_model("SimplePromptSteering")
 class SimplePromptSteering(PromptSteering):
     input_field = "simple_steered_input"
 
@@ -122,7 +119,6 @@ class SimplePromptSteering(PromptSteering):
         return "SimplePromptSteering"
 
 
-@register_model("PromptDetection")
 class PromptDetection(Model):
     input_field = "output"
     concept_field = "output_concept"

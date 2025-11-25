@@ -35,9 +35,14 @@ evaluate:
 
 # Dataset overrides
 dataset:
-  max_concepts: 50
-  num_of_examples: -1
-  cache_dir: assets/cache
+  train:
+    max_concepts: 50
+    num_of_examples: -1
+    cache_dir: assets/cache
+  eval:
+    max_concepts: 50
+    num_of_examples: -1
+    cache_dir: assets/cache
 
 # Wandb overrides
 wandb:

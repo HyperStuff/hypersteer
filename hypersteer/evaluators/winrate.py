@@ -3,7 +3,11 @@ from collections import Counter
 
 from hypersteer.utils.helpers import get_logger
 from .evaluator import Evaluator
-from .prompt_templates import *
+from .prompt_templates import (
+    UNIDIRECTIONAL_PAIRWISE_EVALUATION_CONCEPT_RELEVANCE_TEMPLATE,
+    UNIDIRECTIONAL_PAIRWISE_EVALUATION_FLUENCY_TEMPLATE,
+    UNIDIRECTIONAL_PAIRWISE_EVALUATION_INSTRUCTION_RELEVANCE_TEMPLATE,
+)
 
 # Initialize the logger
 logger = get_logger(__name__)

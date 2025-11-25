@@ -393,7 +393,7 @@ class AxbenchDatasetFactory(BaseDatasetFactory):
                     self.overwrite_inference_data_dir, "latent_eval_data.parquet"
                 )
             )
-            self.logger.warning(
+            self.logger.info(
                 f"Loaded pre-generated data from {self.overwrite_inference_data_dir}."
             )
         # Load seed sentences and instructions
