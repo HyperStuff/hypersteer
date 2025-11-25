@@ -5,7 +5,8 @@ Steering models at scale with hypernetworks. This repo supports distributed trai
 ## Setup
 
 ```bash
-UV_TORCH_BACKEND=auto
+export UV_TORCH_BACKEND=auto
+# use --locked in sync command to skip dependency resolution
 # in root directory
 uv sync
 # To install development dependencies, including `ipykernel`, `jupyter`, `pre-commit`, and `ai_commit`, run:

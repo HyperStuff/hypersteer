@@ -11,11 +11,3 @@ repos:
         exclude: \.ipynb$
       - id: ruff-format
         exclude: \.ipynb$
-  - repo: https://github.com/sidnb13/toolbox
-    rev: ai-commit-v0.1.0.dev1
-    hooks:
-      - id: ai-commit
-        name: ai-commit
-        entry: ai-commit
-        language: python
-        stages: [commit-msg]
