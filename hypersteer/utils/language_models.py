@@ -6,6 +6,7 @@ import uuid
 from pathlib import Path
 
 from hypersteer.utils.helpers import get_logger
+
 from .constants import (
     PRICING_DOLLAR_PER_1M_TOKEN,
     UNIT_1M,
@@ -86,12 +87,12 @@ class LanguageModelStats:
         return input_price + output_price
 
     def print_report(self):
-        logger.info("=" * 20)
-        logger.info(
+        logger.debug("=" * 20)
+        logger.debug(
             f"Total calls: {self.total_call}, Total cache hits: {self.total_cache_hit}"
         )
-        logger.info(f"Total price: ${self.get_total_price()}")
-        logger.info("=" * 20)
+        logger.debug(f"Total price: ${self.get_total_price()}")
+        logger.debug("=" * 20)
 
     def get_report(self):
         return {

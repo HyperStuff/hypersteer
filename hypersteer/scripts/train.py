@@ -7,11 +7,11 @@ from pathlib import Path
 
 import hydra
 import torch
+import wandb
 from dotenv import load_dotenv
 from omegaconf import DictConfig, OmegaConf
 from transformers import AutoModelForCausalLM, AutoTokenizer, set_seed
 
-import wandb
 from hypersteer import get_model
 from hypersteer.data import get_dataset_factory
 from hypersteer.scripts.evaluate import run_eval
@@ -38,7 +38,7 @@ def main(cfg: DictConfig):
     if config.dump_dir:
         pretrained_cfg_path = Path(config.dump_dir) / "config.yaml"
         if pretrained_cfg_path.exists():
-            logger.info(f"Loading pretrained config from {pretrained_cfg_path}")
+            logger.debug(f"Loading pretrained config from {pretrained_cfg_path}")
             pretrained_cfg = OmegaConf.load(pretrained_cfg_path)
             config = OmegaConf.merge(pretrained_cfg, config)
 
@@ -66,7 +66,7 @@ def main(cfg: DictConfig):
 
     # Load model instance onto device
     if args.train.use_bf16:
-        logger.info(f"Using bfloat16 for model {args.model.model_name}")
+        logger.debug(f"Using bfloat16 for model {args.model.model_name}")
     model_instance = AutoModelForCausalLM.from_pretrained(
         args.model.target_model_name,
         torch_dtype=torch.bfloat16 if args.train.use_bf16 else None,

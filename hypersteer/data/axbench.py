@@ -429,19 +429,19 @@ class AxbenchDatasetFactory(BaseDatasetFactory):
         """
         Load and process AxBench training dataset from HuggingFace, returning a HuggingFace dataset.
         """
-        logger.info(f"Loading training dataset {dataset_name} with files {data_files}")
+        logger.debug(f"Loading training dataset {dataset_name} with files {data_files}")
         dataset = load_dataset(
             dataset_name,
             data_files=data_files,
             split=split if kwargs.get("use_split", False) else "train",
             cache_dir=cache_dir,
         )
-        logger.info(f"Loaded dataset with {len(dataset)} examples")
+        logger.debug(f"Loaded dataset with {len(dataset)} examples")
         if select_concept_ids:
             dataset = dataset.filter(
                 lambda x: x["concept_id"] in select_concept_ids, num_proc=4
             )
-            logger.info(f"Filtered to {len(dataset)} examples for selected concepts")
+            logger.debug(f"Filtered to {len(dataset)} examples for selected concepts")
         if max_concepts:
             concept_ids = list(set(dataset["concept_id"]))
             concept_ids = [cid for cid in concept_ids if cid >= 0]
@@ -685,19 +685,21 @@ class AxbenchDatasetFactory(BaseDatasetFactory):
         Returns:
             List of dicts: {concept_id, concept, ref, concept_genres_map}
         """
-        logger.info(f"Loading concept info from split={split}, data_files={data_files}")
+        logger.debug(
+            f"Loading concept info from split={split}, data_files={data_files}"
+        )
         dataset = load_dataset(
             dataset_name,
             data_files=data_files,
             split=split,
             cache_dir=cache_dir,
         )
-        logger.info(f"Loaded dataset with {len(dataset)} examples for concept info")
+        logger.debug(f"Loaded dataset with {len(dataset)} examples for concept info")
         if select_concept_ids:
             dataset = dataset.filter(
                 lambda x: x["concept_id"] in select_concept_ids, num_proc=4
             )
-            logger.info(f"Filtered to {len(dataset)} examples for selected concepts")
+            logger.debug(f"Filtered to {len(dataset)} examples for selected concepts")
         if max_concepts:
             concept_ids = list(set(dataset["concept_id"]))
             concept_ids = [cid for cid in concept_ids if cid >= 0]

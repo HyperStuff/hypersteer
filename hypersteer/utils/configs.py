@@ -43,7 +43,7 @@ def load_experiment_config(
         )
 
     base_config = OmegaConf.load(base_defaults_path)
-    logger.info(f"Loaded base defaults from {base_defaults_path}")
+    logger.debug(f"Loaded base defaults from {base_defaults_path}")
 
     # Load experiment overrides
     experiment_path = config_path / "experiment" / f"{experiment_name}.yaml"
@@ -54,11 +54,11 @@ def load_experiment_config(
         return base_config
 
     experiment_config = OmegaConf.load(experiment_path)
-    logger.info(f"Loaded experiment overrides from {experiment_path}")
+    logger.debug(f"Loaded experiment overrides from {experiment_path}")
 
     # Merge configs (experiment overrides base)
     merged_config = OmegaConf.merge(base_config, experiment_config)
-    logger.info(
+    logger.debug(
         f"Successfully merged experiment '{experiment_name}' with base defaults"
     )
 
@@ -66,7 +66,7 @@ def load_experiment_config(
 
 
 class BaseConfigModel(BaseModel):
-    model_config = ConfigDict(protected_namespaces=(), extra='forbid')
+    model_config = ConfigDict(protected_namespaces=(), extra="forbid")
 
 
 class WandbConfig(BaseConfigModel):
@@ -138,17 +138,17 @@ class DatasetConfig(BaseConfigModel):
         train = data.pop("train", None)
         eval_ = data.pop("eval", None)
         super().__init__(**data)
-        
+
         # Merge top-level values into train/eval
         # Top-level values (especially from command-line overrides) override train/eval values
         # Get top-level values that should propagate to train/eval
         top_level_overrides = {}
         for field_name in self.model_fields.keys():
-            if field_name not in ['train', 'eval']:
+            if field_name not in ["train", "eval"]:
                 # Check if this field exists in the original data (was explicitly set)
                 if field_name in data:
                     top_level_overrides[field_name] = getattr(self, field_name)
-        
+
         if train is not None:
             if isinstance(train, dict):
                 # Start with train-specific values, then override with top-level values

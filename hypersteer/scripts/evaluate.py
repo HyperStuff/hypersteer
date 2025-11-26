@@ -11,11 +11,11 @@ import httpx
 import hydra
 import numpy as np
 import pandas as pd
+import wandb
 from dotenv import load_dotenv
 from omegaconf import DictConfig, OmegaConf
 from openai import AsyncOpenAI
 
-import wandb
 from hypersteer import LMJudgeEvaluator, PerplexityEvaluator, WinRateEvaluator
 from hypersteer.data.utils import load_dataset_for_inference
 from hypersteer.utils.configs import (
@@ -40,6 +40,28 @@ from hypersteer.utils.plot_utils import (
 )
 
 logger = get_logger(__name__)
+
+
+def resolve_model_class_name(model_name: str, model_config) -> str:
+    """
+    Resolve model name to actual class name for display purposes.
+
+    Args:
+        model_name: Model name string (e.g., "HyperSteer", "HyperSteerAttn")
+        model_config: ModelConfig to check hypernet_type
+
+    Returns:
+        Resolved class name string (e.g., "HyperSteerRegression", "HyperSteerAttn")
+    """
+    # Handle "HyperSteer" alias - resolve based on hypernet_type in model_config
+    if model_name == "HyperSteer":
+        hypernet_type = model_config.hypernet_type
+        if hypernet_type == "regression":
+            return "HyperSteerRegression"
+        else:
+            return "HyperSteerAttn"
+    # Return as-is for other model names
+    return model_name
 
 
 def find_run_id(
@@ -433,6 +455,7 @@ def eval_steering_single_task(args_tuple):
         current_df,
         evaluator_name,
         model_name,
+        resolved_model_name,  # Resolved class name for display
         dump_dir,
         lm_model,
         winrate_baseline,
@@ -489,7 +512,7 @@ def eval_steering_single_task(args_tuple):
         return (
             concept_id,
             evaluator.__str__(),
-            model_name.__str__(),
+            resolved_model_name,  # Use resolved class name instead of model_name.__str__()
             eval_result,
             lm_model.stats.get_report(),
             None if bool(lm_caches) else lm_model.cache_in_mem,
@@ -538,7 +561,7 @@ def eval_steering(
         else None
     )
     start_concept_id = state.get("concept_id", 0) if state else 0
-    logger.info(f"Starting concept_id: {start_concept_id}")
+    logger.debug(f"Starting concept_id: {start_concept_id}")
 
     if select_concept_ids is not None:
         start_concept_id = select_concept_ids[0]
@@ -552,18 +575,27 @@ def eval_steering(
         # Fall back to single model_name for backward compatibility
         models_to_evaluate = [args.model.model_name]
 
-    logger.info(f"Evaluating models: {models_to_evaluate}")
+    logger.debug(f"Evaluating models: {models_to_evaluate}")
+
+    # Resolve model names to class names for display
+    resolved_model_names = {}
+    for model_name in models_to_evaluate:
+        resolved_name = resolve_model_class_name(model_name, args.model)
+        resolved_model_names[model_name] = resolved_name
 
     # Create all evaluation tasks - flattened for maximum parallelization
     all_tasks = []
     for model_name in models_to_evaluate:
         if model_name not in STEERING_EXCLUDE_MODELS:
+            # Use resolved class name for display
+            resolved_model_name = resolved_model_names.get(model_name, model_name)
             model_tasks = [
                 (
                     concept_id,
                     current_df,
                     evaluator_name,
-                    model_name,
+                    model_name,  # Keep original for internal use
+                    resolved_model_name,  # Pass resolved name for display
                     args.dump_dir,
                     args.evaluate.lm_model,
                     args.evaluate.winrate_baseline,
@@ -576,7 +608,7 @@ def eval_steering(
             ]
             all_tasks.extend(model_tasks)
         else:
-            logger.info(
+            logger.debug(
                 f"Model {model_name} is excluded from steering evaluation, skipping"
             )
 
@@ -584,7 +616,7 @@ def eval_steering(
     all_results = {}
 
     # Run all evaluations with process pool
-    logger.info(
+    logger.debug(
         f"Number of workers: {args.evaluate.num_of_workers}; Number of CPUs: {multiprocessing.cpu_count()}"
     )
     if (
@@ -705,7 +737,7 @@ def eval_steering(
 
     # Generate final plot
     if not return_results:
-        logger.info("Generating final plot...")
+        logger.debug("Generating final plot...")
         plot_steering(
             aggregated_results,
             Path(dump_dir) / eval_run,
@@ -716,7 +748,7 @@ def eval_steering(
 
         # Plot winrate
         if "WinRateEvaluator" in args.evaluate.steering_evaluators:
-            logger.info("Generating winrate plot...")
+            logger.debug("Generating winrate plot...")
             plot_win_rates(
                 aggregated_results,
                 Path(args.dump_dir) / eval_run,
@@ -935,7 +967,7 @@ def main(cfg: DictConfig):
     # Handle pretrained config merging if needed
     pretrained_cfg_path = Path(config.dump_dir) / "config.yaml"
     if pretrained_cfg_path.exists():
-        logger.info(f"Loading pretrained config from {pretrained_cfg_path}")
+        logger.debug(f"Loading pretrained config from {pretrained_cfg_path}")
         pretrained_cfg = OmegaConf.load(pretrained_cfg_path)
         OmegaConf.set_struct(config, False)
         config = OmegaConf.merge(config, pretrained_cfg)

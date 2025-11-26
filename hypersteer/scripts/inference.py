@@ -11,6 +11,7 @@ import hydra
 import optuna
 import pandas as pd
 import torch
+import wandb
 from datasets import load_from_disk
 from dotenv import load_dotenv
 from omegaconf import DictConfig, OmegaConf
@@ -19,7 +20,6 @@ from optuna.samplers import TPESampler
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, set_seed
 
-import wandb
 from hypersteer import get_model
 from hypersteer.data.base import get_dataset_factory
 from hypersteer.models.model import Model
@@ -67,7 +67,7 @@ def get_or_load_model(model_name, device, use_bf16=False, special_tokens=None):
         return global_model_instance, global_tokenizer
 
     # Otherwise, load the model and tokenizer
-    logger.info(f"Loading model {model_name} onto device {device}")
+    logger.debug(f"Loading model {model_name} onto device {device}")
     tokenizer = AutoTokenizer.from_pretrained(
         model_name, model_max_length=1024, use_fast=False
     )
@@ -260,11 +260,11 @@ def infer_steering(
     prefix_length = 1  # prefix is default to 1 for all models due to the BOS token.
     if is_chat_model:
         prefix_length = get_prefix_length(tokenizer)
-        logger.info(f"Chat model prefix length: {prefix_length}")
+        logger.debug(f"Chat model prefix length: {prefix_length}")
 
     # Load model instance onto device
     if args.inference.use_bf16:
-        logger.info(f"Using bfloat16 for model {args.inference.model_name}")
+        logger.debug(f"Using bfloat16 for model {args.inference.model_name}")
 
     model_instance, tokenizer = get_or_load_model(
         args.inference.model_name,
@@ -387,9 +387,9 @@ def select_steering_factors(
 ):
     """Use Optuna with TPE to select the best steering factor across all concepts."""
 
-    logger.info("=" * 80)
-    logger.info("Starting steering factor selection with Optuna TPE optimizer")
-    logger.info("=" * 80)
+    logger.debug("=" * 80)
+    logger.debug("Starting steering factor selection with Optuna TPE optimizer")
+    logger.debug("=" * 80)
 
     dump_dir = Path(args.dump_dir)
     factory = get_dataset_factory(
@@ -453,7 +453,7 @@ def select_steering_factors(
             factor_min + (factor_max - factor_min) * i / discrete_steps
             for i in range(discrete_steps + 1)
         ]
-        logger.info(f"Using discrete factor space with values: {discrete_values}")
+        logger.debug(f"Using discrete factor space with values: {discrete_values}")
 
     trial_results_dict = {}
     trial_times = []
@@ -470,7 +470,7 @@ def select_steering_factors(
                 "factor", factor_min, factor_max, log=use_log_scale
             )
 
-        logger.info(
+        logger.debug(
             f"Evaluating steering factor: {factor} for all concepts (trial {trial.number + 1}/{n_trials})"
         )
 
@@ -577,7 +577,7 @@ def select_steering_factors(
             trial.set_user_attr("all_metrics", metrics_dict)
             logger.debug(f"Factor: {factor}, All metrics: {metrics_dict}")
 
-        logger.info(f"Factor: {factor}, Mean {metric_name}: {mean_score}")
+        logger.debug(f"Factor: {factor}, Mean {metric_name}: {mean_score}")
 
         # Calculate and log the trial execution time
         trial_end_time = time.time()
@@ -603,7 +603,7 @@ def select_steering_factors(
         minutes, seconds = divmod(remainder, 60)
         est_time_str = f"{int(hours):02d}:{int(minutes):02d}:{int(seconds):02d}"
 
-        logger.info(f"Factor: {factor}, Mean {metric_name}: {mean_score}")
+        logger.debug(f"Factor: {factor}, Mean {metric_name}: {mean_score}")
         logger.debug(f"Trial {trial.number + 1} execution time: {time_str}")
         logger.debug(f"Average trial time: {avg_time:.2f} seconds")
         logger.debug(
@@ -633,7 +633,7 @@ def select_steering_factors(
     hours, remainder = divmod(total_duration, 3600)
     minutes, seconds = divmod(remainder, 60)
     total_time_str = f"{int(hours):02d}:{int(minutes):02d}:{int(seconds):02d}"
-    logger.info(f"Total optimization time: {total_time_str}")
+    logger.debug(f"Total optimization time: {total_time_str}")
 
     # Extract results
     best_trial = study.best_trial
@@ -682,9 +682,11 @@ def select_steering_factors(
                     "all_metrics"
                 ]
 
-    logger.info("=" * 80)
-    logger.info(f"Best factor across all concepts: {best_factor} (score: {best_score})")
-    logger.info(
+    logger.debug("=" * 80)
+    logger.debug(
+        f"Best factor across all concepts: {best_factor} (score: {best_score})"
+    )
+    logger.debug(
         f"Trial history: {[(t.params['steering_factor'], t.value) for t in study.trials]}"
     )
 
@@ -1022,8 +1024,8 @@ def select_steering_factors(
 
     logger.debug(f"Factor selection metadata saved to {metadata_path}")
 
-    logger.info(f"Factor selection results saved to {results_path}")
-    logger.info("=" * 80)
+    logger.debug(f"Factor selection results saved to {results_path}")
+    logger.debug("=" * 80)
     return results
 
 
@@ -1051,7 +1053,7 @@ def run_inference(args: ExperimentConfig):
         and inference_dump_dir.exists()
         and any(inference_dump_dir.iterdir())
     ):
-        logger.info(
+        logger.debug(
             f"Infer dump dir {inference_dump_dir} already exists and is nonempty. Skipping."
         )
         return
@@ -1059,7 +1061,7 @@ def run_inference(args: ExperimentConfig):
     inference_dump_dir.mkdir(parents=True, exist_ok=True)
 
     args.dataset.train_dir = original_dump_dir / "train"
-    logger.info(
+    logger.debug(
         f"Inferencing with following configuration:\n{dump_json(args.inference.model_dump(), indent=4)}"
     )
     set_seed(args.seed)
@@ -1103,7 +1105,7 @@ def main(cfg: DictConfig):
     if config.dump_dir:
         pretrained_cfg_path = Path(config.dump_dir) / "config.yaml"
         if pretrained_cfg_path.exists():
-            logger.info(f"Loading pretrained config from {pretrained_cfg_path}")
+            logger.debug(f"Loading pretrained config from {pretrained_cfg_path}")
             pretrained_cfg = OmegaConf.load(pretrained_cfg_path)
             OmegaConf.set_struct(config, False)
             config = OmegaConf.merge(config, pretrained_cfg)
