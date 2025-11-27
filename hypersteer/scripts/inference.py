@@ -622,7 +622,7 @@ def select_steering_factors(
         sampler=sampler,
     )
     total_start_time = time.time()
-    logger.info(
+    logger.debug(
         f"Starting optimization with {n_trials} trials at {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
     )
     study.optimize(objective, n_trials=n_trials)

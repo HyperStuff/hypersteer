@@ -159,6 +159,11 @@ def get_logger(name: str, level: str | None = None) -> DistributedAwareLogger:
     if level:
         logger.setLevel(getattr(logging, level.upper()))
 
+    # Suppress verbose third-party library logs
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("openai").setLevel(logging.WARNING)
+
     return logger
 
 

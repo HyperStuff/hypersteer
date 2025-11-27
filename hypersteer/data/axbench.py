@@ -393,7 +393,7 @@ class AxbenchDatasetFactory(BaseDatasetFactory):
                     self.overwrite_inference_data_dir, "latent_eval_data.parquet"
                 )
             )
-            self.logger.info(
+            self.logger.debug(
                 f"Loaded pre-generated data from {self.overwrite_inference_data_dir}."
             )
         # Load seed sentences and instructions
@@ -450,7 +450,7 @@ class AxbenchDatasetFactory(BaseDatasetFactory):
             dataset = dataset.filter(
                 lambda x: x["concept_id"] in limited_concept_ids, num_proc=4
             )
-            logger.info(
+            logger.debug(
                 f"Limited to {len(limited_concept_ids)} concepts with {len(dataset)} examples"
             )
         if self.tokenizer is not None and self.model is not None:
@@ -466,7 +466,7 @@ class AxbenchDatasetFactory(BaseDatasetFactory):
                 replace_negative_description=replace_negative_description,
                 is_chat_model=self.is_chat_model,
             )
-            logger.info(
+            logger.debug(
                 f"Processed dataset with {len(dataset)} examples ready for training"
             )
         return dataset
@@ -708,7 +708,7 @@ class AxbenchDatasetFactory(BaseDatasetFactory):
             dataset = dataset.filter(
                 lambda x: x["concept_id"] in limited_concept_ids, num_proc=4
             )
-            logger.info(
+            logger.debug(
                 f"Limited to {len(limited_concept_ids)} concepts with {len(dataset)} examples"
             )
         df = dataset.to_pandas()

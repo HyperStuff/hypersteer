@@ -370,7 +370,7 @@ def process_mask_sparsity_metrics(
         std_sparsity = reduced_sparsity.std()
         sparsity_metrics[f"eval_mean_mask_sparsity/{model_name}"] = avg_sparsity
         sparsity_metrics[f"eval_std_mask_sparsity/{model_name}"] = std_sparsity
-        logger.info(
+        logger.debug(
             f"Average mask sparsity for {model_name}: {avg_sparsity:.4f} (std: {std_sparsity:.4f})"
         )
         # --- Save histogram plot to disk ---
@@ -727,13 +727,13 @@ def eval_steering(
         "total_cache_hits": sum([report["total_cache_hits"] for report in lm_reports]),
         "total_price": sum([report["total_price"] for report in lm_reports]),
     }
-    logger.info("=" * 20)
-    logger.info(
+    logger.debug("=" * 20)
+    logger.debug(
         f"Total calls: {aggregated_lm_report['total_calls']}, "
         f"Total cache_hits: {aggregated_lm_report['total_cache_hits']}"
     )
-    logger.info(f"Total price: ${aggregated_lm_report['total_price']}")
-    logger.info("=" * 20)
+    logger.debug(f"Total price: ${aggregated_lm_report['total_price']}")
+    logger.debug("=" * 20)
 
     # Generate final plot
     if not return_results:
@@ -883,7 +883,7 @@ def log_results_to_wandb(
 
 
 def run_eval(args: ExperimentConfig, infer_run="inference"):
-    logger.info(
+    logger.debug(
         f"Evaluating generations with the following configuration:\n{dump_json(args.evaluate.model_dump(), indent=4)}"
     )
 
@@ -904,7 +904,7 @@ def run_eval(args: ExperimentConfig, infer_run="inference"):
         and eval_dump_dir.exists()
         and any(eval_dump_dir.iterdir())
     ):
-        logger.info(
+        logger.debug(
             f"Eval dump dir {eval_dump_dir} already exists and is nonempty. Skipping."
         )
         return

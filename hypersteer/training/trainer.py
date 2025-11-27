@@ -5,11 +5,11 @@ from typing import Any
 
 import torch
 import torch.distributed as dist
+import wandb
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from transformers import get_scheduler
 
-import wandb
 from hypersteer.utils.configs import ModelConfig, TrainingArgs, WandbConfig
 from hypersteer.utils.helpers import get_logger, get_rank, get_world_size
 
@@ -84,7 +84,7 @@ class TrainerMixin(ABC):
         if wandb.run and (not dist.is_initialized() or dist.get_rank() == 0):
             wandb.log(log_dict)
 
-        logger.info(log_dict)
+        logger.debug(log_dict)
 
     @abstractmethod
     def get_trainable_parameters(self):
@@ -157,13 +157,13 @@ class Trainer:
         if use_step_limit:
             num_training_steps = self.training_args.n_steps
             effective_epochs = float("inf")
-            logger.info(f"Training with step limit: {num_training_steps} steps")
+            logger.debug(f"Training with step limit: {num_training_steps} steps")
         else:
             num_training_steps = self.training_args.n_epochs * (
                 len(train_dataloader) // self.training_args.gradient_accumulation_steps
             )
             effective_epochs = self.training_args.n_epochs
-            logger.info(f"Training with epoch limit: {effective_epochs} epochs")
+            logger.debug(f"Training with epoch limit: {effective_epochs} epochs")
 
         # Setup learning rate scheduler
         self.lr_scheduler = get_scheduler(
@@ -177,18 +177,18 @@ class Trainer:
         steps_per_epoch = (
             len(train_dataloader) // self.training_args.gradient_accumulation_steps
         )
-        logger.info("Training configuration:")
-        logger.info(f"  - Batch size: {self.training_args.batch_size}")
-        logger.info(
+        logger.debug("Training configuration:")
+        logger.debug(f"  - Batch size: {self.training_args.batch_size}")
+        logger.debug(
             f"  - Gradient accumulation steps: {self.training_args.gradient_accumulation_steps}"
         )
-        logger.info(f"  - Steps per epoch: {steps_per_epoch}")
-        logger.info(f"  - Total training steps: {num_training_steps}")
+        logger.debug(f"  - Steps per epoch: {steps_per_epoch}")
+        logger.debug(f"  - Total training steps: {num_training_steps}")
         if use_step_limit:
             estimated_epochs = num_training_steps / steps_per_epoch
-            logger.info(f"  - Estimated epochs to complete: {estimated_epochs:.2f}")
+            logger.debug(f"  - Estimated epochs to complete: {estimated_epochs:.2f}")
         else:
-            logger.info(f"  - Training epochs: {effective_epochs}")
+            logger.debug(f"  - Training epochs: {effective_epochs}")
 
         return num_training_steps, effective_epochs
 
@@ -221,7 +221,7 @@ class Trainer:
             while step < len(train_dataloader):
                 # Check if we've reached the step limit
                 if use_step_limit and self.global_step >= num_training_steps:
-                    logger.info(
+                    logger.debug(
                         f"Reached step limit of {num_training_steps} steps. Terminating training."
                     )
                     return

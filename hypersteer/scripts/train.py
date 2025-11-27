@@ -101,7 +101,7 @@ def main(cfg: DictConfig):
         max_concepts=args.dataset.train.max_concepts,
     )
 
-    logger.info(f"Loaded and processed dataset with {len(training_dataset)} examples")
+    logger.debug(f"Loaded and processed dataset with {len(training_dataset)} examples")
 
     combined_df = training_dataset.to_pandas()
 
@@ -123,7 +123,7 @@ def main(cfg: DictConfig):
     logger.info(f"Training {model_config.model_name} with {len(concept_ids)} concepts")
 
     if training_args.train_on_negative:
-        logger.info(f"Training {model_config.model_name} on negative examples")
+        logger.debug(f"Training {model_config.model_name} on negative examples")
 
     # Create in-train dev set
     dev_size = (
@@ -141,7 +141,7 @@ def main(cfg: DictConfig):
     train_df = combined_df.iloc[dev_size:]
     dev_df = combined_df.iloc[:dev_size]
 
-    logger.info(
+    logger.debug(
         f"Training on {len(train_df)} examples, validating on {len(dev_df)} examples",
     )
 

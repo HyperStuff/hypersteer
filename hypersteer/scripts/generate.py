@@ -49,7 +49,7 @@ def load_concepts(dump_dir):
         with open(dump_dir) as file:
             concepts = [line.strip() for line in file.readlines()]
         if concepts[0].startswith("http://") or concepts[0].startswith("https://"):
-            logger.info("Detect external links. Pull concept info from the link.")
+            logger.debug("Detect external links. Pull concept info from the link.")
             for concept in concepts:
                 if "www.neuronpedia.org" not in concept:
                     raise ValueError(f"Pulling from {concept} is not supported.")
@@ -302,8 +302,8 @@ def save_latent(dump_dir, concept_id, partition, current_df):
 
 def generate_latent(generate_args, args):
     args.data_dir = f"{args.dump_dir}/generate"
-    logger.info("Inferencing with following configuration:")
-    logger.info(args)
+    logger.debug("Inferencing with following configuration:")
+    logger.debug(args)
     set_seed(args.seed)
 
     data_dir = args.data_dir
@@ -316,9 +316,9 @@ def generate_latent(generate_args, args):
     # Load the state if it exists.
     state = load_state_latent(args.dump_dir, "latent")
     start_concept_id = state.get("concept_id", 0) if state else 0
-    logger.info(f"Starting concept index: {start_concept_id}")
+    logger.debug(f"Starting concept index: {start_concept_id}")
     if start_concept_id >= len(concept_ids):
-        logger.info("Datasets for all concepts have been generated. Exiting.")
+        logger.debug("Datasets for all concepts have been generated. Exiting.")
         return
 
     # Create a new OpenAI client.
@@ -405,9 +405,9 @@ def generate_training(args, generate_args):
     # Load the state if it exists.
     state = load_state(dump_dir)
     start_concept_id = state.get("concept_id", 0) if state else 0
-    logger.info(f"Starting concept index: {start_concept_id}")
+    logger.debug(f"Starting concept index: {start_concept_id}")
     if start_concept_id >= len(concepts):
-        logger.info("Datasets for all concepts have been generated. Exiting.")
+        logger.debug("Datasets for all concepts have been generated. Exiting.")
         return
 
     # Create a new OpenAI client.
@@ -510,7 +510,7 @@ def generate_training(args, generate_args):
         )
         data_concept_id += 1
 
-    logger.info("Finished creating dataset.")
+    logger.debug("Finished creating dataset.")
 
 
 def save_dpo(dump_dir, concept_id, partition, current_df):
@@ -576,9 +576,9 @@ def generate_dpo_training(args, generate_args):
     # Load the state if it exists.
     state = load_state_latent(dump_dir, "dpo")
     start_concept_id = state.get("concept_id", 0) if state else 0
-    logger.info(f"Starting concept index: {start_concept_id}")
+    logger.debug(f"Starting concept index: {start_concept_id}")
     if start_concept_id >= len(concepts):
-        logger.info("Datasets for all concepts have been generated. Exiting.")
+        logger.debug("Datasets for all concepts have been generated. Exiting.")
         return
 
     # Load lm and tokenizer.
@@ -661,7 +661,7 @@ def generate_dpo_training(args, generate_args):
         current_state = {"concept_id": concept_id}
         save_state_dpo(args.dump_dir, current_state, "latent")
 
-    logger.info("Finished creating DPO dataset.")
+    logger.debug("Finished creating DPO dataset.")
 
 
 def main():
@@ -678,8 +678,8 @@ def main():
 
     generate_args = DatasetArgs(custom_args=custom_args, section="generate")
     inference_args = DatasetArgs(custom_args=custom_args, section="inference")
-    logger.info("Generating datasets with the following configuration:")
-    logger.info(generate_args)
+    logger.debug("Generating datasets with the following configuration:")
+    logger.debug(generate_args)
 
     if generate_args.mode == "training":
         generate_training(generate_args, inference_args)
