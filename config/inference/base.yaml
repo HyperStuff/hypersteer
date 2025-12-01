@@ -5,15 +5,6 @@ mode: "all"
 model_name: "google/gemma-2-2b-it"
 batch_infer_hypernetwork: true
 
-# Latent related params
-input_length: 128
-output_length: 128
-latent_num_of_examples: 36
-latent_batch_size: 16
-imbalance_factor: 2
-disable_neuronpedia_max_act: true
-ignore_latent_state: false
-
 # Steering related params
 steering_intervention_type: "addition"
 steering_model_name: "google/gemma-2-2b-it"

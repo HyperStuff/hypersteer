@@ -5,7 +5,4 @@ defaults:
 batch_size: 4
 test_batch_size: 4
 save_dir: "assets/checkpoints"
-run_eval_suite_at_end: true
-
-# Enhanced loss configuration for hypersteer
-coeff_latent_l1_loss: 0.005 
+run_eval_suite_at_end: true 

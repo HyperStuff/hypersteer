@@ -3,6 +3,8 @@ assets/
 multirun/
 outputs/
 wandb/
+data/
+!hypersteer/data/
 
 core.*
 

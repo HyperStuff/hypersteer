@@ -1,14 +1,26 @@
 import asyncio
 import os
+import time
 from collections import namedtuple
 
 import pandas as pd
 from datasets import Dataset, DatasetDict, concatenate_datasets, load_dataset
+from tqdm.auto import tqdm
 
 from hypersteer.utils.constants import EMPTY_CONCEPT
 from hypersteer.utils.helpers import get_logger
 from hypersteer.utils.language_models import LanguageModel
-from hypersteer.utils.model_utils import get_suffix_length
+from hypersteer.utils.model_utils import get_model_continues, get_suffix_length
+from hypersteer.utils.prompt_utils import (
+    continue_with,
+    continue_with_concept,
+    continue_without_concept,
+    get_concept_genres,
+    get_random_content,
+    response_with,
+    response_with_concept,
+    response_without_concept,
+)
 
 from .base import (
     BaseDatasetFactory,
@@ -118,6 +130,7 @@ def apply_no_chat_template(example, tokenizer, binarize=False):
 
 def process_dataset_for_training(
     dataset,
+    concept_genres_map,
     tokenizer,
     model_name,
     binarize=False,
@@ -170,7 +183,9 @@ def process_dataset_for_training(
         concept_ids = list(set(positive_dataset["concept_id"]))
 
         processed_negative_examples = []
-        for concept_id in concept_ids:
+        for concept_id in tqdm(
+            concept_ids, desc="Processing negative examples", disable=len(concept_ids) < 5
+        ):
             concept_positive = positive_dataset.filter(
                 lambda x: x["concept_id"] == concept_id
             )
@@ -381,24 +396,66 @@ class AxbenchDatasetFactory(BaseDatasetFactory):
                 use_cache=use_cache,
                 master_data_dir=self.master_data_dir,
             )
-        # Optionally load pregenerated data
-        self.overwrite_inference_data_dir = kwargs.get(
-            "overwrite_inference_data_dir", None
-        )
-        if self.overwrite_inference_data_dir is not None and os.path.exists(
-            self.overwrite_inference_data_dir
-        ):
-            self.pregenerated_inference_df = pd.read_parquet(
-                os.path.join(
-                    self.overwrite_inference_data_dir, "latent_eval_data.parquet"
-                )
-            )
-            self.logger.debug(
-                f"Loaded pre-generated data from {self.overwrite_inference_data_dir}."
-            )
         # Load seed sentences and instructions
         self.seed_sentences = get_seed_sentences_dataset()
         self.seed_instructions = get_seed_instructions_dataset()
+
+        # create a shared genre-based negative pools all at once
+        if start_concept_id == 0 and not kwargs.get("is_inference", False):
+            per_category_n = int(num_of_examples // 2)
+            start = time.time()
+            self.logger.warning(
+                "Creating genre-based and shared negative examples for all concepts."
+            )
+            random_examples = []
+            for genre in tqdm(["text", "math", "code"], desc="Processing genres"):
+                random_content = get_random_content(
+                    self.seed_sentences
+                    if self.dataset_category == "continuation"
+                    else self.seed_instructions,
+                    tokenizer=self.tokenizer,
+                    count=per_category_n,
+                    genres=[genre],
+                    concepts=["random"],
+                    length=None,
+                    split="train",
+                )
+                concept_outputs = get_model_continues(
+                    self.model,
+                    self.tokenizer,
+                    random_content["random"],
+                    max_new_tokens=int(output_length * 1.5),
+                    is_chat_model=is_chat_model,
+                    include_system_prompt=include_system_prompt,
+                )
+                for i, (prompt, output) in enumerate(
+                    zip(random_content["random"], concept_outputs)
+                ):
+                    random_examples += [
+                        [
+                            prompt,
+                            output,
+                            EMPTY_CONCEPT,
+                            genre,
+                            "negative",
+                            self.dataset_category,
+                        ]
+                    ]
+            self.negative_df = pd.DataFrame(
+                random_examples,
+                columns=[
+                    "input",
+                    "output",
+                    "output_concept",
+                    "concept_genre",
+                    "category",
+                    "dataset_category",
+                ],
+            )
+            self.negative_df["concept_id"] = -1
+            self.logger.warning(
+                f"Finished creating negative examples in {round(time.time() - start, 3)} sec."
+            )
 
     async def _get_steering_prompts(self, concepts):
         # Use the LanguageModel to generate steering prompts for each concept
@@ -410,7 +467,39 @@ class AxbenchDatasetFactory(BaseDatasetFactory):
         )
         return [c.strip() for c in completions]
 
-    def create_training_ds(
+    def save_cache(self):
+        """Save the language model cache before exiting"""
+        self.lm_model.save_cache()
+
+    def reset_stats(self):
+        """Reset API costs"""
+        if self.use_cache:
+            self.lm_model.dump()
+        self.lm_model.stats.print_report()
+        self.lm_model.stats.reset()
+
+    def prepare_genre_concepts(self, concepts, **kwargs):
+        start = time.time()
+        tasks = []
+
+        # prepare genres if needed
+        concept_genres_map = kwargs.get("concept_genres_map", None)
+        if concept_genres_map is None:
+            logger.warning("Creating genre for the inputs (not provided).")
+            genre_task = get_concept_genres(
+                self.lm_model, concepts, api_tag=kwargs.get("api_tag", "")
+            )
+            tasks.append(genre_task)
+
+        # run tasks
+        res = asyncio.run(run_tasks(tasks))
+        concept_genres_map = res[0]
+
+        # log
+        logger.warning(f"Init finished in {round(time.time() - start, 3)} sec.")
+        return concept_genres_map
+
+    def create_train_ds(
         self,
         dataset_name,
         data_files=None,
@@ -495,10 +584,14 @@ class AxbenchDatasetFactory(BaseDatasetFactory):
         assert steering_factors is not None, "steering_factors must be provided"
         assert steering_datasets is not None, "steering_datasets must be provided"
         all_datasets = []
-        for dataset_name in steering_datasets:
+        for dataset_name in tqdm(
+            steering_datasets, desc="Processing steering datasets", disable=len(steering_datasets) < 2
+        ):
             if dataset_name == "OUATPrefix":
                 all_examples = []
-                for idx, concept in enumerate(concepts):
+                for idx, concept in enumerate(
+                    tqdm(concepts, desc="Processing concepts (OUAT)", disable=len(concepts) < 5)
+                ):
                     for i in range(subset_n):
                         for factor in steering_factors:
                             all_examples.append(
@@ -527,7 +620,9 @@ class AxbenchDatasetFactory(BaseDatasetFactory):
                         T_PROMPT_STEERING % (concept) for concept in concepts
                     ]
                 all_examples = []
-                for idx, concept in enumerate(concepts):
+                for idx, concept in enumerate(
+                    tqdm(concepts, desc="Processing concepts (AlpacaEval)", disable=len(concepts) < 5)
+                ):
                     sampled_prompts = alpaca_eval_df.sample(
                         subset_n, random_state=int(idx)
                     )["instruction"].tolist()
@@ -664,66 +759,147 @@ class AxbenchDatasetFactory(BaseDatasetFactory):
             return all_datasets[0]
         return concatenate_datasets(all_datasets)
 
-    def get_concept_info(
-        self,
-        dataset_name,
-        split="train",
-        data_files=None,
-        cache_dir=None,
-        select_concept_ids=None,
-        max_concepts=None,
-        **kwargs,
-    ):
-        """
-        Load the AxBench dataset for the specified split and return concept info dicts.
-        Args:
-            split: "train" or "eval"
-            data_files: Optional data files dict
-            cache_dir: Optional cache dir
-            select_concept_ids: Optional list of concept IDs to filter
-            max_concepts: Optional max number of concepts
-        Returns:
-            List of dicts: {concept_id, concept, ref, concept_genres_map}
-        """
-        logger.debug(
-            f"Loading concept info from split={split}, data_files={data_files}"
+    def create_train_df(self, concept, n, concept_genres_map, **kwargs) -> pd.DataFrame:
+        """Lower-level utility fns for use in dataset creation."""
+        start = time.time()
+        logger.warning("Creating dataframe.")
+        all_examples = []
+
+        output_length = kwargs.get("output_length", 32)
+
+        functors = []
+        if self.dataset_category == "continuation":
+            functors = [continue_with_concept, continue_without_concept]
+        else:
+            functors = [response_with_concept, response_without_concept]
+
+        # random sentence or instruction
+        genre = concept_genres_map[concept][0]
+        concepts_random_content = get_random_content(
+            self.seed_sentences
+            if self.dataset_category == "continuation"
+            else self.seed_instructions,
+            tokenizer=self.tokenizer,
+            count=n,
+            genres=[genre],
+            concepts=[concept],
+            length=None,
+            split="train",
         )
-        dataset = load_dataset(
-            dataset_name,
-            data_files=data_files,
-            split=split,
-            cache_dir=cache_dir,
+        per_category_n = int(n // 2)
+
+        # positive continuation / instruction
+        continue_task = functors[0](
+            self.lm_model,
+            self.tokenizer,
+            concepts=[concept] * len(concepts_random_content[concept][:per_category_n]),
+            content=concepts_random_content[concept][:per_category_n],
+            length=output_length,
         )
-        logger.debug(f"Loaded dataset with {len(dataset)} examples for concept info")
-        if select_concept_ids:
-            dataset = dataset.filter(
-                lambda x: x["concept_id"] in select_concept_ids, num_proc=4
+        concept_outputs = asyncio.run(run_tasks([continue_task]))[0]
+        for i, (prompt, output) in enumerate(
+            zip(concepts_random_content[concept][:per_category_n], concept_outputs)
+        ):
+            all_examples += [
+                [prompt, output, concept, genre, "positive", self.dataset_category]
+            ]
+
+        # update the column definitions of the DataFrame
+        df = pd.DataFrame(
+            all_examples,
+            columns=[
+                "input",
+                "output",
+                "output_concept",
+                "concept_genre",
+                "category",
+                "dataset_category",
+            ],
+        )
+        logger.warning(
+            f"Finished creating current dataframe in {round(time.time() - start, 3)} sec."
+        )
+        return df
+
+    def create_dpo_df(self, existing_df, **kwargs) -> pd.DataFrame:
+        """Lower-level utility fns for use in dataset creation."""
+        start = time.time()
+        logger.warning("Creating dataframe.")
+        batch_size = kwargs.get("batch_size", 8)
+        output_length = kwargs.get("output_length", 32)
+        is_chat_model = kwargs.get("is_chat_model", True)
+        include_system_prompt = kwargs.get("include_system_prompt", False)
+        keep_orig_axbench_format = kwargs.get("keep_orig_axbench_format", False)
+        steer_data_type = kwargs.get("steer_data_type", "concept")
+
+        positive_df = existing_df[existing_df["category"] == "positive"]
+        positive_prompts = positive_df["input"].tolist()
+
+        # get the concept for this existing_df
+        concept = existing_df["output_concept"].iloc[0]
+
+        if keep_orig_axbench_format:
+            logger.warning(
+                f"keep_orig_axbench_format is set to True. Using the local model to generate responses."
             )
-            logger.debug(f"Filtered to {len(dataset)} examples for selected concepts")
-        if max_concepts:
-            concept_ids = list(set(dataset["concept_id"]))
-            concept_ids = [cid for cid in concept_ids if cid >= 0]
-            concept_ids.sort()
-            limited_concept_ids = concept_ids[:max_concepts]
-            dataset = dataset.filter(
-                lambda x: x["concept_id"] in limited_concept_ids, num_proc=4
+            losing_outputs = get_model_continues(
+                kwargs["model"],
+                kwargs["tokenizer"],
+                positive_prompts,
+                max_new_tokens=int(output_length * 1.5),
+                is_chat_model=is_chat_model,
+                include_system_prompt=include_system_prompt,
+                batch_size=batch_size,
+                verbose=True,
             )
-            logger.debug(
-                f"Limited to {len(limited_concept_ids)} concepts with {len(dataset)} examples"
-            )
-        df = dataset.to_pandas()
-        concept_info = []
-        unique_concepts = df.groupby("concept_id").first()
-        for concept_id, row in unique_concepts.iterrows():
-            if concept_id >= 0:
-                concept_info.append(
-                    {
-                        "concept_id": concept_id,
-                        "concept": row.get("output_concept", f"concept_{concept_id}"),
-                        "ref": f"https://neuronpedia.org/api/feature/{concept_id}",
-                        "concept_genres_map": {
-                            row.get("output_concept", f"concept_{concept_id}"): ["text"]
-                        },
-                    }
+        else:
+            if steer_data_type == "concept":
+                losing_output_tasks = response_without_concept(
+                    self.lm_model, concept, positive_prompts
                 )
-        return concept_info
+            # else:
+            #     losing_output_tasks = response_without_rule(
+            #         self.lm_model, concept, positive_prompts
+            #     )
+            losing_outputs = asyncio.run(run_tasks([losing_output_tasks]))[0]
+        positive_df["losing_output"] = losing_outputs
+
+        # TODO: comment them out as they are not selected in our offline hyperparameter sweeps.
+        # alright, let's get two types of steered inputs and outputs.
+        # we should separate between concepts and rules of input
+        # if steer_data_type == "concept":
+        #     steered_prompt_tasks = get_dpo_steering_prompt(
+        #         self.lm_model, positive_prompts, concept)
+
+        # elif steer_data_type == "rule":
+        #     steered_prompt_tasks = get_dpo_steering_prompt_rule(
+        #         self.lm_model, positive_prompts, concept)
+
+        # blend_in_steered_prompts = asyncio.run(run_tasks([steered_prompt_tasks]))[0]
+        # blend_in_steered_output_tasks = response_with(
+        #     self.lm_model, blend_in_steered_prompts)
+        # blend_in_steered_outputs = asyncio.run(run_tasks([blend_in_steered_output_tasks]))[0]
+        # positive_df["blend_in_steered_input"] = blend_in_steered_prompts
+        # positive_df["blend_in_steered_output"] = blend_in_steered_outputs
+
+        # if steer_data_type == "concept":
+        #     prepend_steered_prompt_tasks = get_dpo_steering_prompt(
+        #         self.lm_model, positive_prompts, concept, use_simple=True)
+        # else:
+        #     prepend_steered_prompt_tasks = get_dpo_steering_prompt_rule(
+        #         self.lm_model, positive_prompts, concept, use_simple=True)
+
+        # prepend_steered_prompts = asyncio.run(run_tasks([prepend_steered_prompt_tasks]))[0]
+        # prepend_steered_prompts = [
+        #     f"{steering_prompt}\n\nQuestion: {sampled_prompt}"
+        #     for steering_prompt, sampled_prompt in zip(prepend_steered_prompts, positive_prompts)]
+        # prepend_steered_output_tasks = response_with(
+        #     self.lm_model, prepend_steered_prompts)
+        # prepend_steered_outputs = asyncio.run(run_tasks([prepend_steered_output_tasks]))[0]
+        # positive_df["prepend_steered_input"] = prepend_steered_prompts
+        # positive_df["prepend_steered_output"] = prepend_steered_outputs
+
+        logger.warning(
+            f"Finished creating current dataframe in {round(time.time() - start, 3)} sec."
+        )
+        return positive_df

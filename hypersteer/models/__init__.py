@@ -1,17 +1,9 @@
 from .base import BaseModel
-from .hypersteer_attn import HyperSteerAttn
-from .hypersteer_base import HyperSteerBase
 from .hypersteer_regression import HyperSteerRegression
 from .model import Model
 from .prompting import PromptDetection, PromptSteering, SimplePromptSteering
 
-# Backward compatibility alias
-HyperSteer = HyperSteerAttn
-
-# Simple model registry - no decorator magic
 MODELS = {
-    "HyperSteer": HyperSteerAttn,  # Default/alias
-    "HyperSteerAttn": HyperSteerAttn,
     "HyperSteerRegression": HyperSteerRegression,
     "PromptSteering": PromptSteering,
     "SimplePromptSteering": SimplePromptSteering,
@@ -41,7 +33,9 @@ def get_model(model_type: str, **kwargs):
                 model_type = "HyperSteerAttn"
 
     if model_type not in MODELS:
-        raise ValueError(f"Unknown model: {model_type}. Available: {list(MODELS.keys())}")
+        raise ValueError(
+            f"Unknown model: {model_type}. Available: {list(MODELS.keys())}"
+        )
 
     return MODELS[model_type](**kwargs)
 
@@ -56,8 +50,6 @@ __all__ = [
     "list_available_models",
     "BaseModel",
     "Model",
-    "HyperSteer",
-    "HyperSteerBase",
     "HyperSteerAttn",
     "HyperSteerRegression",
     "PromptSteering",

@@ -35,11 +35,12 @@ python -m hypersteer.scripts.train model=hypersteer dataset=axbench  # Mix confi
 1. **HyperAdditiveIntervention** (`hypersteer/models/modules/interventions.py`): pyvene-based intervention that adds scaled steering vectors to hidden states at specified layers. Optional `SelectionHead` learns per-token masks for selective intervention.
 
 2. **HyperSteer Models** (`hypersteer/models/`):
-   - `HyperSteerBase` - Shared logic for training, inference, visualization
-   - `HyperSteerAttn` - Cross-attention hypernet (uses `HypernetModel` to attend over base model hidden states)
-   - `HyperSteerRegression` - Simple regression hypernet (linear projection from concept embedding)
+   - `HyperSteerBase` (`hypersteer/models/hypersteer_base.py`) - Abstract base class with shared logic for training, inference, visualization
+   - `HyperSteerRegression` (`hypersteer/models/hypersteer_regression.py`) - Regression-based hypernet (linear projection from concept embedding via base model)
 
-   Model dispatch: `get_model("HyperSteer", model_config=cfg)` uses `cfg.hypernet_type` ("attn" or "regression") to select the right class.
+   Note: HyperSteerAttn (attention-based hypernet) was removed. Config files may reference `hypernet_type: "attn"` but this is not currently implemented.
+
+   Model dispatch: `get_model("HyperSteer", model_config=cfg)` attempts to use `cfg.hypernet_type` to select the implementation, but currently only "regression" is available.
 
 3. **Trainer** (`hypersteer/training/trainer.py`): Generic trainer using `TrainerMixin` interface. Models implement `train_step`, `val_step`, `setup_optimizer` methods.
 

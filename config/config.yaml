@@ -7,7 +7,7 @@ defaults:
   - inference: base
   - evaluate: base
   - generate: base
-  - experiment: null # Merges at root level when specified
+  - experiment: base
   - override hydra/job_logging: colorlog
   - override hydra/hydra_logging: colorlog
 

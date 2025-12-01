@@ -2,12 +2,10 @@ defaults:
   - base
 
 # HyperSteer-specific inference overrides
-latent_batch_size: 24
 steering_batch_size: 32
 temperature: 1.0
 run_distinct_infers: true
 batch_infer_hypernetwork: false
-ignore_latent_state: true
 ignore_steering_state: true
 
 # Enhanced steering factors for hypersteer

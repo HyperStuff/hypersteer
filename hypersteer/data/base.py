@@ -31,14 +31,6 @@ class BaseDatasetFactory:
         pass
 
 
-class BaseSteeringDatasetFactory:
-    """Base class for steering dataset factories (no abstract methods)"""
-
-    def __init__(self, **kwargs):
-        """Initialize the steering dataset factory"""
-        pass
-
-
 def register_factory(name: str):
     """Decorator to register a dataset factory"""
 
@@ -49,38 +41,20 @@ def register_factory(name: str):
     return decorator
 
 
-def get_dataset_factory(factory_type: str, **kwargs):
+def get_dataset_factory(factory_type: str, *args, **kwargs):
     """
     Get a dataset factory instance by type.
 
     Args:
         factory_type: The type of factory to create (e.g., 'axbench')
+        *args: Positional arguments to pass to the factory constructor
         **kwargs: Arguments to pass to the factory constructor
 
     Returns:
         An instance of the requested dataset factory
     """
     factory_class = DatasetFactoryRegistry.get_factory(factory_type)
-    return factory_class(**kwargs)
-
-
-def get_steering_dataset_factory(factory_type: str, **kwargs):
-    """
-    Get a steering dataset factory instance by type.
-
-    Args:
-        factory_type: The type of factory to create (e.g., 'axbench')
-        **kwargs: Arguments to pass to the factory constructor
-
-    Returns:
-        An instance of the requested steering dataset factory
-    """
-    # Automatically append '_steering' suffix if not present
-    if not factory_type.endswith("_steering"):
-        factory_type = f"{factory_type}_steering"
-
-    factory_class = DatasetFactoryRegistry.get_factory(factory_type)
-    return factory_class(**kwargs)
+    return factory_class(*args, **kwargs)
 
 
 def list_available_factories():

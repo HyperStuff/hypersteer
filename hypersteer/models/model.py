@@ -241,21 +241,6 @@ class Model(BaseModel):
             neg_logits = [list(zip(neg_tokens, neg_values.tolist()))]
         return top_logits, neg_logits
 
-    def pre_compute_mean_activations(self, dump_dir, **kwargs):
-        max_activations = {}  # sae_id to max_activation
-        # Loop over saved latent files in dump_dir.
-        for file in os.listdir(dump_dir):
-            if file.startswith("latent_") and file.endswith(".parquet"):
-                latent_path = os.path.join(dump_dir, file)
-                latent = pd.read_parquet(latent_path)
-                # loop through unique sorted concept_id
-                for concept_id in sorted(latent["concept_id"].unique()):
-                    concept_latent = latent[latent["concept_id"] == concept_id]
-                    max_act = concept_latent[f"{self.__str__()}_max_act"].max()
-                    max_activations[concept_id] = max_act if max_act > 0 else 50
-        self.max_activations = max_activations
-        return max_activations
-
     def to(self, device):
         """Move model to specified device"""
         self.device = device

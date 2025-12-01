@@ -7,6 +7,8 @@
 import random
 import re
 
+from tqdm.auto import tqdm
+
 from hypersteer.utils.helpers import get_logger
 from ..templates.prompt_templates import *
 from .constants import *
@@ -154,7 +156,9 @@ def get_random_content(
     random_samples = dataset.select(indices)
     responses += [sample["input"] for sample in random_samples]
 
-    for i, response in enumerate(responses):
+    for i, response in enumerate(
+        tqdm(responses, desc="Processing random content", disable=len(responses) < 10)
+    ):
         response = response.strip(" .'").strip('"')
         # during training, we don't crop otherwise it will cutoff prompts.
         if length is not None:

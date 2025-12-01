@@ -6,7 +6,7 @@ import pytest
 import torch
 
 from hypersteer.utils.helpers import (
-    _get_current_device,
+    get_current_device,
     get_device_ordinal,
     get_rank,
     get_world_size,
@@ -21,14 +21,14 @@ class TestGetCurrentDevice:
         """Test returns CPU device when no GPU is available."""
         with patch("torch.cuda.is_available", return_value=False):
             with patch("torch.backends.mps.is_available", return_value=False):
-                device = _get_current_device()
+                device = get_current_device()
                 assert device == torch.device("cpu")
 
     def test_returns_mps_when_available(self):
         """Test returns MPS device when available (and no CUDA)."""
         with patch("torch.cuda.is_available", return_value=False):
             with patch("torch.backends.mps.is_available", return_value=True):
-                device = _get_current_device()
+                device = get_current_device()
                 assert device == torch.device("mps")
 
 

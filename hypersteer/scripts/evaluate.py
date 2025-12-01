@@ -15,6 +15,7 @@ import wandb
 from dotenv import load_dotenv
 from omegaconf import DictConfig, OmegaConf
 from openai import AsyncOpenAI
+from tqdm.auto import tqdm
 
 from hypersteer import LMJudgeEvaluator, PerplexityEvaluator, WinRateEvaluator
 from hypersteer.data.utils import load_dataset_for_inference
@@ -110,17 +111,17 @@ def data_generator(data_dir, mode, winrate_split_ratio=None, infer_run="inferenc
 
     Args:
         data_dir (str): Path to the data directory.
-        mode (str): Mode of operation ('latent' or 'steering').
+        mode (str): Mode of operation ('steering' or 'preference').
 
     Yields:
         (group_id, df_subset): A tuple containing the group_id and subset DataFrame.
     """
     # Pre-load and organize data by concept_id
     concept_data = {}
-    if mode == "latent":
-        df = pd.read_parquet(os.path.join(data_dir, infer_run, "latent_data.parquet"))
-    elif "steering" in mode or mode == "winrate":
+    if "steering" in mode or mode == "winrate":
         df = pd.read_parquet(os.path.join(data_dir, infer_run, "steering_data.parquet"))
+    elif "preference" in mode or mode == "winrate":
+        df = pd.read_parquet(os.path.join(data_dir, infer_run, "preference_data.parquet"))
     # Group by concept_id and store in dictionary
     for concept_id, group in df.groupby("concept_id"):
         if concept_id not in concept_data:
@@ -128,7 +129,11 @@ def data_generator(data_dir, mode, winrate_split_ratio=None, infer_run="inferenc
         concept_data[concept_id].append(group)
 
     # Yield concatenated data for each concept_id
-    for concept_id in sorted(concept_data.keys()):
+    for concept_id in tqdm(
+        sorted(concept_data.keys()),
+        desc=f"Processing {mode} data",
+        disable=len(concept_data) < 5,
+    ):
         if len(concept_data[concept_id]) > 1:
             df_subset = pd.concat(concept_data[concept_id])
         else:

@@ -13,7 +13,7 @@ import torch.distributed as dist
 from hypersteer.utils.constants import EVAL_STATE_FILE
 
 
-def _get_current_device():
+def get_current_device() -> torch.device:
     if torch.cuda.is_available():
         return torch.cuda.current_device()
     elif torch.backends.mps.is_available():
@@ -28,11 +28,11 @@ def load_state(dump_dir, mode, eval_run="evaluate"):
 
     Args:
         dump_dir (str): The directory to load the state file from.
+        mode (str): The evaluation mode (e.g., "steering")
 
     Returns:
         dict: The loaded state dictionary, or None if no state file exists.
     """
-    assert mode in ["latent", "steering"], "Invalid mode"
     state_path = os.path.join(dump_dir, eval_run, f"{mode}_{EVAL_STATE_FILE}")
     if os.path.exists(state_path):
         with open(state_path, "rb") as f:
@@ -270,20 +270,14 @@ RELEVANT_STEERING_KEYS = [
     "lm_model",
     "seed",
 ]
-RELEVANT_LATENT_KEYS = [
-    "input_length",
-    "latent_num_of_examples",
-    "lm_model",
-    "seed",
-]
 
 
 def get_cache_key(
-    config, concept_ids, metadata, is_latent=False, extra_keys: dict = {}
+    config, concept_ids, metadata, extra_keys: dict = {}
 ):
     """Create a hash key based on relevant inputs that would affect the steering data."""
     # Extract only the relevant keys from the inference config
-    relevant_keys = RELEVANT_LATENT_KEYS if is_latent else RELEVANT_STEERING_KEYS
+    relevant_keys = RELEVANT_STEERING_KEYS
 
     # Convert OmegaConf to dict and extract only relevant keys
     config_dict = config.model_dump()

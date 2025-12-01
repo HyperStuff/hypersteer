@@ -259,43 +259,6 @@ def remove_gradient_parallel_to_decoder_directions(model):
     )
 
 
-def calculate_l1_losses(
-    latent, non_topk_latent, labels=None, mask=None, batchmean=True
-):
-    """
-    Calculate L1 losses with masked mean.
-
-    Parameters:
-    - latent: latent representation, shape [batch_size, seq_len]
-    - non_topk_latent: non-topk latent representation, shape [batch_size, seq_len]
-    - labels: labels, shape [batch_size]
-    - mask: long mask, shape [batch_size, seq_len]
-    - batchmean: whether to use batchmean
-    """
-    if mask is None:
-        mask = torch.ones_like(latent, dtype=torch.long)
-
-    mask = mask.bool()
-
-    valid_counts = mask.sum(dim=-1)  # [batch_size]
-    eps = torch.finfo(latent.dtype).eps
-    if non_topk_latent is not None:
-        masked_non_topk_sum = (non_topk_latent * mask).sum(dim=-1)  # [batch_size]
-        mean_non_topk = masked_non_topk_sum / (valid_counts + eps)
-        if batchmean:
-            l1_loss = mean_non_topk.mean()  # mean across batch
-        else:
-            l1_loss = mean_non_topk
-    else:
-        masked_sum = (latent * mask).sum(dim=-1)  # [batch_size]
-        mean_all = masked_sum / (valid_counts + eps)
-        if batchmean:
-            l1_loss = mean_all.mean()  # mean across batch
-        else:
-            l1_loss = mean_all
-    return l1_loss
-
-
 def compute_lm_loss(logits, labels, pad_token_id=-100, reduce=True):
     labels = labels.clone()
     labels[labels == pad_token_id] = -100

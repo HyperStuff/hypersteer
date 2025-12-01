@@ -1,5 +1,7 @@
 import asyncio
 
+from tqdm.auto import tqdm
+
 from hypersteer.utils.helpers import get_logger
 from .evaluator import Evaluator
 from .prompt_templates import *  # noqa: F403
@@ -72,7 +74,12 @@ class LMJudgeEvaluator(Evaluator):
         model_relevance_instruction_prompts = []
         model_fluency_prompts = []
         # This is a generation dataset.
-        for idx, row in data.iterrows():
+        for idx, row in tqdm(
+            data.iterrows(),
+            total=len(data),
+            desc="Preparing evaluation prompts",
+            disable=len(data) < 10,
+        ):
             input_concept = row["input_concept"]
             original_prompt = row["original_prompt"]
             generation = row[f"{column_name}_steered_generation"]
@@ -151,7 +158,11 @@ class LMJudgeEvaluator(Evaluator):
         all_fluency_ratings = []
         all_aggregated_ratings = []
 
-        for i in range(len(model_relevance_concept_ratings)):
+        for i in tqdm(
+            range(len(model_relevance_concept_ratings)),
+            desc="Computing aggregated ratings",
+            disable=len(model_relevance_concept_ratings) < 10,
+        ):
             all_relevance_concept_ratings += [model_relevance_concept_ratings[i][-1]]
             all_relevance_instruction_ratings += [
                 model_relevance_instruction_ratings[i][-1]

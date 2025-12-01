@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import TypeVar
+from typing import Literal, TypeVar
 
 from omegaconf import DictConfig, OmegaConf
 from pydantic import BaseModel, ConfigDict, Field
@@ -273,7 +273,6 @@ class TrainingArgs(BaseConfigModel):
     adaptive_row_lr: bool = False
 
     # Loss configuration
-    coeff_latent_l1_loss: float = 0.005
     reconstruction_loss_ratio: float = 0.0
     steering_loss_ratio: float = 1.0
 
@@ -304,6 +303,8 @@ class GenerateConfig(BaseConfigModel):
     dataset_category: str = "instruction"
     lm_use_cache: bool = False
     seed: int = 42
+    mode: Literal["training", "preference_training"] = "training"
+    ignore_generate_state: bool = False
 
 
 class InferenceConfig(BaseConfigModel):
@@ -316,15 +317,6 @@ class InferenceConfig(BaseConfigModel):
         default_factory=list
     )  # Multiple models to run inference on
     batch_infer_hypernetwork: bool = True
-
-    # Latent related params
-    input_length: int = 128
-    output_length: int = 128
-    latent_num_of_examples: int = 36
-    latent_batch_size: int = 16
-    imbalance_factor: int = 2
-    disable_neuronpedia_max_act: bool = True
-    ignore_latent_state: bool = False
 
     # Steering related params
     steering_intervention_type: str = "addition"
@@ -364,9 +356,6 @@ class EvalArgs(BaseConfigModel):
     mode: str = "all"
     models: list[str] = Field(default_factory=list)  # Multiple models to evaluate
     evaluators: list[str] = Field(default_factory=list)
-    latent_evaluators: list[str] = Field(
-        default_factory=lambda: ["AUCROCEvaluator", "HardNegativeEvaluator"]
-    )
     steering_evaluators: list[str] = Field(
         default_factory=lambda: ["PerplexityEvaluator", "LMJudgeEvaluator"]
     )

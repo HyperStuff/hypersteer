@@ -3,7 +3,6 @@ defaults:
 
 mode: "all"
 evaluators: []
-latent_evaluators: ["AUCROCEvaluator", "HardNegativeEvaluator"]
 steering_evaluators: ["PerplexityEvaluator", "LMJudgeEvaluator"]
 top_k_concepts: 10
 num_of_workers: 32

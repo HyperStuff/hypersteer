@@ -287,7 +287,7 @@ def infer_steering(
     cache_dir = Path(args.dataset.cache_dir or "assets/data/axbench/cache")
     cache_dir.mkdir(parents=True, exist_ok=True)
     cache_key = get_cache_key(
-        args.inference, concept_ids, concept_info, is_latent=False
+        args.inference, concept_ids, concept_info
     )
     cache_file = os.path.join(
         cache_dir, f"steering_data_cache_{cache_key}"
