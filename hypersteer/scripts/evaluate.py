@@ -121,7 +121,9 @@ def data_generator(data_dir, mode, winrate_split_ratio=None, infer_run="inferenc
     if "steering" in mode or mode == "winrate":
         df = pd.read_parquet(os.path.join(data_dir, infer_run, "steering_data.parquet"))
     elif "preference" in mode or mode == "winrate":
-        df = pd.read_parquet(os.path.join(data_dir, infer_run, "preference_data.parquet"))
+        df = pd.read_parquet(
+            os.path.join(data_dir, infer_run, "preference_data.parquet")
+        )
     # Group by concept_id and store in dictionary
     for concept_id, group in df.groupby("concept_id"):
         if concept_id not in concept_data:

@@ -52,7 +52,7 @@ METADATA_FILE = "metadata.jsonl"
 def load_concepts(dump_dir):
     sae_concepts = []
     if ".txt" in dump_dir:
-        with open(dump_dir, "r") as file:
+        with open(dump_dir) as file:
             concepts = [line.strip() for line in file.readlines()]
         if concepts[0].startswith("http://") or concepts[0].startswith("https://"):
             logger.warning("Detect external links. Pull concept info from the link.")
@@ -71,7 +71,7 @@ def load_concepts(dump_dir):
         # for csv, then the format is <concept>,<url>
         # no http connection is needed
         concepts = []
-        with open(dump_dir, "r") as file:
+        with open(dump_dir) as file:
             reader = csv.reader(file)
             for row in reader:
                 sae_concepts += [row[0]]
@@ -80,7 +80,7 @@ def load_concepts(dump_dir):
     elif ".json" in dump_dir:
         concepts = []
         # this must be a neuropedia export.
-        with open(dump_dir, "r") as file:
+        with open(dump_dir) as file:
             json_concepts = json.load(file)
         seen_index = set()
         for concept in json_concepts:
@@ -130,7 +130,7 @@ def load_metadata_flatten(metadata_path):
     Load flatten metadata from a JSON lines file.
     """
     metadata = []
-    with open(Path(metadata_path) / METADATA_FILE, "r") as f:
+    with open(Path(metadata_path) / METADATA_FILE) as f:
         for line in f:
             data = json.loads(line)
             concept, ref = data["concept"], data["ref"]
@@ -243,7 +243,7 @@ def generate_training(args, generate_args):
     start_concept_id = state.get("concept_id", 0) if state else 0
     logger.warning(f"Starting concept index: {start_concept_id}")
     if start_concept_id >= len(concepts):
-        logger.warning(f"Datasets for all concepts have been generated. Exiting.")
+        logger.warning("Datasets for all concepts have been generated. Exiting.")
         return
 
     # Create a new OpenAI client.
@@ -296,6 +296,7 @@ def generate_training(args, generate_args):
         start_concept_id=start_concept_id,
         is_chat_model=is_chat_model,
         include_system_prompt=include_system_prompt,
+        batch_size=generate_args.batch_size,
     )
     atexit.register(dataset_factory.save_cache)
     atexit.register(dataset_factory.reset_stats)
@@ -343,24 +344,25 @@ def generate_training(args, generate_args):
 
     # save as a combined ds loadable in hf format
     intermediate_files = glob.glob(os.path.join(dump_dir, "train_data_*.parquet"))
-    all_train_data = pd.concat(
-        [pd.read_parquet(path) for path in intermediate_files],
-        ignore_index=True,
-    )
-    save_df_to_parquet_safely(
-        all_train_data, os.path.join(dump_dir, "train_data.parquet")
-    )
+    if intermediate_files:
+        final_file_path = os.path.join(dump_dir, "train_data.parquet")
+        all_train_data = pd.concat(
+            [pd.read_parquet(path) for path in intermediate_files],
+            ignore_index=True,
+        )
+        save_df_to_parquet_safely(all_train_data, final_file_path)
 
-    # Clean up intermediate per-concept parquet files
-    for path in intermediate_files:
-        os.remove(path)
-        logger.debug(f"Removed intermediate file: {path}")
+        # Clean up intermediate per-concept parquet files (exclude the final file)
+        for path in intermediate_files:
+            if path != final_file_path:  # Don't remove the final combined file
+                os.remove(path)
+                logger.debug(f"Removed intermediate file: {path}")
 
-    logger.info(f"Finished creating training dataset.")
+    logger.info("Finished creating training dataset.")
 
 
 def save_preference(dump_dir, concept_id, partition, current_df):
-    # This function saves DataFrames per rank per partition (latent or steering)
+    # This function saves DataFrames per partition
     dump_dir.mkdir(parents=True, exist_ok=True)
 
     # Save DataFrame using Parquet
@@ -410,9 +412,7 @@ def generate_preference_training(args, generate_args):
             f"Train data does not exist: {os.path.join(dump_dir, 'train_data.parquet')}"
         )
 
-    concept_path = generate_args.concept_path
     num_of_examples = generate_args.num_of_examples
-    max_concepts = generate_args.max_concepts
 
     # Load and optionally shuffle concepts
     set_seed(int(generate_args.seed))
@@ -422,7 +422,7 @@ def generate_preference_training(args, generate_args):
 
     # Create a logging formatter that includes the rank
     formatter = logging.Formatter(
-        fmt=f"%(asctime)s,%(msecs)03d %(levelname)-8s [%(filename)s:%(lineno)d] %(message)s",
+        fmt="%(asctime)s,%(msecs)03d %(levelname)-8s [%(filename)s:%(lineno)d] %(message)s",
         datefmt="%Y-%m-%d:%H:%M:%S",
     )
 
@@ -457,7 +457,7 @@ def generate_preference_training(args, generate_args):
     start_concept_id = state.get("concept_id", 0) if state else 0
     logger.warning(f"Starting concept index: {start_concept_id}")
     if start_concept_id >= len(concept_ids):
-        logger.warning(f"Datasets for all concepts have been generated. Exiting.")
+        logger.warning("Datasets for all concepts have been generated. Exiting.")
         return
 
     # Create a new OpenAI client.
@@ -508,10 +508,6 @@ def generate_preference_training(args, generate_args):
         model = AutoModelForCausalLM.from_pretrained(
             args.model_name, torch_dtype=torch.bfloat16
         )
-        is_chat_model = True if args.model_name in CHAT_MODELS else False
-        include_system_prompt = (
-            True if args.model_name == "meta-llama/Llama-3.1-8B-Instruct" else False
-        )
         model = model.cuda()
         tokenizer = AutoTokenizer.from_pretrained(args.model_name, model_max_length=512)
         tokenizer.padding_side = "right"
@@ -548,20 +544,20 @@ def generate_preference_training(args, generate_args):
     intermediate_files = glob.glob(
         os.path.join(dump_dir, "preference_train_data_*.parquet")
     )
-    all_preference_data = pd.concat(
-        [pd.read_parquet(path) for path in intermediate_files],
-        ignore_index=True,
-    )
-    save_df_to_parquet_safely(
-        all_preference_data, os.path.join(dump_dir, "preference_train_data.parquet")
-    )
+    if intermediate_files:
+        final_file_path = os.path.join(dump_dir, "preference_train_data.parquet")
+        all_preference_data = pd.concat(
+            [pd.read_parquet(path) for path in intermediate_files],
+            ignore_index=True,
+        )
+        save_df_to_parquet_safely(all_preference_data, final_file_path)
 
-    # Clean up intermediate per-concept parquet files
-    for path in intermediate_files:
-        os.remove(path)
-        logger.debug(f"Removed intermediate file: {path}")
+        # Clean up intermediate per-concept parquet files
+        for path in intermediate_files:
+            os.remove(path)
+            logger.debug(f"Removed intermediate file: {path}")
 
-    logger.info(f"Finished creating preference dataset.")
+    logger.info("Finished creating preference dataset.")
 
 
 @hydra.main(config_path="../../config", config_name="config", version_base=None)

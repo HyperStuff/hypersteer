@@ -1,5 +1,4 @@
 import asyncio
-import os
 import time
 from collections import namedtuple
 
@@ -12,12 +11,10 @@ from hypersteer.utils.helpers import get_logger
 from hypersteer.utils.language_models import LanguageModel
 from hypersteer.utils.model_utils import get_model_continues, get_suffix_length
 from hypersteer.utils.prompt_utils import (
-    continue_with,
     continue_with_concept,
     continue_without_concept,
     get_concept_genres,
     get_random_content,
-    response_with,
     response_with_concept,
     response_without_concept,
 )
@@ -184,7 +181,9 @@ def process_dataset_for_training(
 
         processed_negative_examples = []
         for concept_id in tqdm(
-            concept_ids, desc="Processing negative examples", disable=len(concept_ids) < 5
+            concept_ids,
+            desc="Processing negative examples",
+            disable=len(concept_ids) < 5,
         ):
             concept_positive = positive_dataset.filter(
                 lambda x: x["concept_id"] == concept_id
@@ -382,6 +381,7 @@ class AxbenchDatasetFactory(BaseDatasetFactory):
         self.is_chat_model = is_chat_model
         self.seed = kwargs.get("seed", 42)
         self.logger = kwargs.get("logger", logger)
+        self.batch_size = kwargs.get("batch_size", 8)  # Default to 8 if not specified
         self.lm_model = None
         self.has_prompt_steering = has_prompt_steering or kwargs.get(
             "has_prompt_steering", False
@@ -427,6 +427,8 @@ class AxbenchDatasetFactory(BaseDatasetFactory):
                     max_new_tokens=int(output_length * 1.5),
                     is_chat_model=is_chat_model,
                     include_system_prompt=include_system_prompt,
+                    batch_size=self.batch_size,
+                    verbose=True,
                 )
                 for i, (prompt, output) in enumerate(
                     zip(random_content["random"], concept_outputs)
@@ -585,12 +587,18 @@ class AxbenchDatasetFactory(BaseDatasetFactory):
         assert steering_datasets is not None, "steering_datasets must be provided"
         all_datasets = []
         for dataset_name in tqdm(
-            steering_datasets, desc="Processing steering datasets", disable=len(steering_datasets) < 2
+            steering_datasets,
+            desc="Processing steering datasets",
+            disable=len(steering_datasets) < 2,
         ):
             if dataset_name == "OUATPrefix":
                 all_examples = []
                 for idx, concept in enumerate(
-                    tqdm(concepts, desc="Processing concepts (OUAT)", disable=len(concepts) < 5)
+                    tqdm(
+                        concepts,
+                        desc="Processing concepts (OUAT)",
+                        disable=len(concepts) < 5,
+                    )
                 ):
                     for i in range(subset_n):
                         for factor in steering_factors:
@@ -621,7 +629,11 @@ class AxbenchDatasetFactory(BaseDatasetFactory):
                     ]
                 all_examples = []
                 for idx, concept in enumerate(
-                    tqdm(concepts, desc="Processing concepts (AlpacaEval)", disable=len(concepts) < 5)
+                    tqdm(
+                        concepts,
+                        desc="Processing concepts (AlpacaEval)",
+                        disable=len(concepts) < 5,
+                    )
                 ):
                     sampled_prompts = alpaca_eval_df.sample(
                         subset_n, random_state=int(idx)
@@ -840,7 +852,7 @@ class AxbenchDatasetFactory(BaseDatasetFactory):
 
         if keep_orig_axbench_format:
             logger.warning(
-                f"keep_orig_axbench_format is set to True. Using the local model to generate responses."
+                "keep_orig_axbench_format is set to True. Using the local model to generate responses."
             )
             losing_outputs = get_model_continues(
                 kwargs["model"],

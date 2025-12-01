@@ -10,4 +10,5 @@ master_data_dir: "data"
 dataset_category: "instruction"
 lm_use_cache: false
 seed: 42
-ignore_generate_state: false 
+ignore_generate_state: false
+batch_size: 64  # Batch size for model generation (increase for A100) 

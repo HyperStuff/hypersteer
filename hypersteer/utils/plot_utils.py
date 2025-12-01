@@ -9,7 +9,6 @@ from plotnine import (
     coord_flip,
     element_text,
     facet_wrap,
-    geom_abline,
     geom_bar,
     geom_line,
     geom_point,
@@ -19,7 +18,6 @@ from plotnine import (
     scale_fill_manual,
     theme,
     theme_bw,
-    ylim,
 )
 
 # Predefined color and marker sequences for consistency
@@ -145,104 +143,6 @@ def _save_win_rates_matplotlib(df, save_path):
     plt.close()
 
 
-def plot_aggregated_roc(jsonl_data, write_to_path=None, report_to=[], wandb_name=None):
-    # Collect ROC data for each model
-    metrics_list = [
-        aggregated_result["results"]["AUCROCEvaluator"]
-        for aggregated_result in jsonl_data
-    ]
-
-    # Define common FPR thresholds for interpolation
-    common_fpr = np.linspace(0, 1, 100)
-
-    tprs = {}
-    aucs = {}
-    for metrics in metrics_list:
-        for model_name, value in metrics.items():
-            fpr = value["roc_curve"]["fpr"]
-            tpr = value["roc_curve"]["tpr"]
-            auc = value["roc_auc"]
-
-            interp_tpr = np.interp(common_fpr, fpr, tpr)
-            interp_tpr[0] = 0.0  # Ensure TPR starts at 0
-            if model_name not in tprs:
-                tprs[model_name] = []
-                aucs[model_name] = []
-            tprs[model_name].append(interp_tpr)
-            aucs[model_name].append(auc)
-
-    # Prepare data for plotting
-    plot_data = []
-    for model_name in tprs.keys():
-        mean_tpr = np.mean(tprs[model_name], axis=0)
-        mean_auc = np.mean(aucs[model_name])
-        for fpr, tpr in zip(common_fpr, mean_tpr):
-            plot_data.append(
-                {
-                    "FPR": fpr,
-                    "TPR": tpr,
-                    "Model": f"{model_name} (AUC = {mean_auc:.2f})",
-                }
-            )
-
-    df = pd.DataFrame(plot_data)
-
-    # Create the plot
-    p = (
-        ggplot(df, aes(x="FPR", y="TPR", color="Model"))
-        + geom_line(size=1)
-        + geom_abline(slope=1, intercept=0, linetype="dashed", color="gray")
-        + theme_bw()
-        + labs(x="False Positive Rate (FPR)", y="True Positive Rate (TPR)")
-        + theme(
-            figure_size=(4, 4),
-            legend_title=element_text(size=8),
-            legend_text=element_text(size=6),
-            axis_title=element_text(size=10),
-            axis_text=element_text(size=8),
-            plot_title=element_text(size=12),
-            legend_position="right",
-        )
-    )
-
-    # Optional: Customize colors if needed
-    # COLORS = ['#1f77b4', '#ff7f0e', '#2ca02c', ...]  # Define your color palette
-    # p += scale_color_manual(values=COLORS)
-
-    # Save or show the plot
-    if write_to_path:
-        save_path = os.path.abspath(str(write_to_path / "aggregated_roc.png"))
-        try:
-            print(f"Attempting plotnine save to: {save_path}")
-            p.save(save_path, dpi=300, bbox_inches="tight")
-            print("Plot saved successfully with plotnine")
-        except Exception as e:
-            print(f"Plotnine save failed: {str(e)}, trying matplotlib fallback")
-            try:
-                _save_roc_matplotlib(df, save_path)
-                print("Plot saved successfully with matplotlib")
-            except Exception as e2:
-                print(f"Matplotlib save also failed: {str(e2)}")
-
-    # Report to wandb if wandb_name is provided
-    if report_to is not None and "wandb" in report_to:
-        # Prepare data for wandb.plot.line_series
-        xs = common_fpr.tolist()
-        ys = [np.mean(tprs[model], axis=0).tolist() for model in tprs]
-        keys = [f"{model} (AUC = {np.mean(aucs[model]):.2f})" for model in tprs]
-        wandb.log(
-            {
-                "latent/roc_curve": wandb.plot.line_series(
-                    xs=xs,
-                    ys=ys,
-                    keys=keys,
-                    title="Aggregated ROC Curve",
-                    xname="False Positive Rate (FPR)",
-                )
-            }
-        )
-
-
 def plot_metrics(
     jsonl_data, configs, write_to_path=None, report_to=[], wandb_name=None, mode=None
 ):
@@ -345,87 +245,6 @@ def plot_metrics(
                 xs=xs, ys=ys, keys=keys, title=f"{metric}", xname="Factor"
             )
         wandb.log(line_series_plots)
-
-
-def plot_accuracy_bars(
-    jsonl_data, evaluator_name, write_to_path=None, report_to=[], wandb_name=None
-):
-    # Get unique methods and sort them
-    methods = set()
-    for entry in jsonl_data:
-        methods.update(entry["results"][evaluator_name].keys())
-    methods = sorted(list(methods))
-
-    # Initialize data structure for 'Seen' accuracy
-    seen_accuracies = {method: [] for method in methods}
-
-    # Collect data from all concepts
-    for entry in jsonl_data:
-        results = entry["results"][evaluator_name]
-        for method in methods:
-            if method in results:
-                if "macro_avg_accuracy" in results[method]:
-                    seen_accuracies[method].append(
-                        results[method]["macro_avg_accuracy"]
-                    )
-
-    # Calculate means
-    seen_means = {
-        method: np.mean(vals) if len(vals) > 0 else 0
-        for method, vals in seen_accuracies.items()
-    }
-
-    # Prepare data for plotting
-    data = []
-    for method in methods:
-        data.append({"Method": method, "Accuracy": seen_means[method]})
-
-    df = pd.DataFrame(data)
-
-    # Create the plot
-    p = (
-        ggplot(df, aes(x="Method", y="Accuracy", fill="Method"))
-        + geom_bar(stat="identity", width=0.7)
-        + geom_text(
-            aes(label="round(Accuracy, 2)"), va="bottom", size=8, format_string="{:.2f}"
-        )
-        + ylim(0, 1)  # Set y-axis limits from 0 to 1
-        + theme_bw()
-        + labs(x="Method", y="Accuracy")
-        + theme(
-            figure_size=(5, 2),
-            legend_position="none",  # Remove legend since 'fill' corresponds to 'Method'
-            axis_title=element_text(size=5),
-            axis_text=element_text(size=5),
-            plot_title=element_text(size=5),
-        )
-    )
-
-    # Save or show the plot
-    if write_to_path:
-        save_path = os.path.abspath(
-            str(write_to_path / "macro_avg_accuracy_incl_hard_neg.png")
-        )
-        try:
-            print(f"Attempting plotnine save to: {save_path}")
-            p.save(save_path, dpi=300, bbox_inches="tight")
-            print("Plot saved successfully with plotnine")
-        except Exception as e:
-            print(f"Plotnine save failed: {str(e)}, trying matplotlib fallback")
-            try:
-                _save_accuracy_bars_matplotlib(df, save_path)
-                print("Plot saved successfully with matplotlib")
-            except Exception as e2:
-                print(f"Matplotlib save also failed: {str(e2)}")
-
-    if report_to is not None and "wandb" in report_to:
-        wandb.log(
-            {
-                "latent/macro_avg_accuracy_incl_hard_neg": wandb.Image(
-                    str(write_to_path / "macro_avg_accuracy_incl_hard_neg.png")
-                )
-            }
-        )
 
 
 def plot_win_rates(jsonl_data, write_to_path=None, report_to=[], wandb_name=None):

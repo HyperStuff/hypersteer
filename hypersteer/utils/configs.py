@@ -305,6 +305,7 @@ class GenerateConfig(BaseConfigModel):
     seed: int = 42
     mode: Literal["training", "preference_training"] = "training"
     ignore_generate_state: bool = False
+    batch_size: int = 64  # Batch size for model generation during negative df creation
 
 
 class InferenceConfig(BaseConfigModel):
